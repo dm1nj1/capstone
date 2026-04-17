@@ -42,6 +42,7 @@ export default function Dashboard() {
         attackCount: Math.floor(Math.random() * 200),
         averageRisk: Math.floor(Math.random() * 100),
       }));
+
       setLineData((prev) =>
         prev.map((d) => ({ ...d, v: Math.floor(Math.random() * 15) }))
       );
@@ -75,7 +76,7 @@ export default function Dashboard() {
           <h2 className="font-semibold mb-4">실시간 공격 상태</h2>
 
           <div className="grid grid-cols-2 gap-4">
-            {/* PIE (원형 + 퍼센트) */}
+            {/* PIE */}
             <div className="bg-[#3c4b5f] p-4 rounded-xl">
               <p className="text-sm mb-2">공격 유형</p>
 
@@ -85,7 +86,6 @@ export default function Dashboard() {
                     data={pieData}
                     dataKey="value"
                     outerRadius={80}
-                    labelLine={false}
                     label={({ cx, cy, midAngle, outerRadius, percent }) => {
                       const RADIAN = Math.PI / 180;
                       const radius = outerRadius * 0.65;
@@ -106,21 +106,13 @@ export default function Dashboard() {
                         </text>
                       );
                     }}
+                    labelLine={false}
                   >
                     <Cell fill="#f4a62a" />
                     <Cell fill="#4a90e2" />
                   </Pie>
 
-                  <Tooltip
-                    formatter={(value) => {
-                      const total = pieData.reduce(
-                        (sum, item) => sum + item.value,
-                        0
-                      );
-                      const percent = ((value / total) * 100).toFixed(1);
-                      return [`${value} (${percent}%)`, "비율"];
-                    }}
-                  />
+                  <Tooltip />
                 </PieChart>
               </ResponsiveContainer>
 
@@ -140,30 +132,62 @@ export default function Dashboard() {
                   <XAxis dataKey="t" stroke="#ccc" />
                   <YAxis stroke="#ccc" />
                   <Tooltip />
-                  <Line type="monotone" dataKey="v" stroke="#f4a62a" strokeWidth={3} dot />
+                  <Line type="monotone" dataKey="v" stroke="#f4a62a" strokeWidth={3} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           </div>
         </div>
 
-        {/* RIGHT */}
-        <div className="bg-[#2f3b4c] text-white p-5 rounded-xl shadow">
+        {/* RIGHT PANEL 🔥 수정 핵심 */}
+        <div className="bg-[#2f3b4c] text-white p-5 rounded-xl shadow flex flex-col">
           <h2 className="font-semibold mb-4">실시간 알림 로그</h2>
 
-          <div className="flex justify-between items-center bg-[#3c4b5f] px-3 py-2 rounded mb-3 text-xs">
-            <span className="bg-red-500 px-2 py-1 rounded">HIGH만 보기</span>
-            <input className="bg-[#2f3b4c] px-2 py-1 rounded outline-none" placeholder="검색" />
+          {/* 🔥 1. 그래프 (상단) */}
+          <div className="bg-[#3c4b5f] p-3 rounded-xl mb-4 h-[140px]">
+
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={lineData}>
+                <XAxis dataKey="t" hide />
+                <YAxis hide />
+                <Tooltip />
+                <Line
+                  type="monotone"
+                  dataKey="v"
+                  stroke="#f4a62a"
+                  strokeWidth={2}
+                  dot={false}
+                />
+              </LineChart>
+            </ResponsiveContainer>
           </div>
 
-          <div className="space-y-2 text-xs max-h-56 overflow-y-auto">
-            {["192.168.1.15","192.168.1.22","203.45.67.39","192.168.1.10","192.283.120.45"]
-              .map((ip, i) => (
-                <div key={i} className="flex justify-between bg-[#3c4b5f] px-3 py-2 rounded">
-                  <span className="text-red-400">위험</span>
-                  <span>{ip}</span>
-                </div>
-              ))}
+          {/* 🔥 2. 필터 */}
+          <div className="flex justify-between items-center bg-[#3c4b5f] px-3 py-2 rounded mb-3 text-xs">
+            <span className="bg-red-500 px-2 py-1 rounded">HIGH만 보기</span>
+            <input
+              className="bg-[#2f3b4c] px-2 py-1 rounded outline-none"
+              placeholder="검색"
+            />
+          </div>
+
+          {/* 🔥 3. 로그 리스트 */}
+          <div className="space-y-2 text-xs overflow-y-auto flex-1">
+            {[
+              "192.168.1.15",
+              "192.168.1.22",
+              "203.45.67.39",
+              "192.168.1.10",
+              "192.283.120.45",
+            ].map((ip, i) => (
+              <div
+                key={i}
+                className="flex justify-between bg-[#3c4b5f] px-3 py-2 rounded"
+              >
+                <span className="text-red-400">위험</span>
+                <span>{ip}</span>
+              </div>
+            ))}
           </div>
         </div>
       </div>
