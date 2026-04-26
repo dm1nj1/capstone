@@ -13,7 +13,7 @@ import {
   CartesianGrid,
 } from "recharts";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = "https://cristal-uninstructible-overthinly.ngrok-free.dev";
 
 export default function Dashboard() {
   // ===============================
