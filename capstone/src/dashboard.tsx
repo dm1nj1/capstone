@@ -20,10 +20,18 @@ import {
   CartesianGrid,
 } from "recharts";
 
+import {
+  fetchSummary,
+  fetchAttackTypes,
+  fetchTimeline,
+  fetchAlerts,
+  fetchTraffic,
+} from "./dashboardApi";
+
 // ===============================
 // API BASE URL
 // ===============================
-const API_BASE = "http://localhost:8080";
+const API_BASE = " https://cristal-uninstructible-overthinly.ngrok-free.dev";
 
 export default function Dashboard() {
   // ===============================
@@ -36,82 +44,43 @@ export default function Dashboard() {
     averageRisk: 0,
   });
 
-  const [pieData, setPieData] = useState([]);
-  const [lineData, setLineData] = useState([]);
-  const [flows, setFlows] = useState([]);
-  const [traffic, setTraffic] = useState([]);
+  const [pieData, setPieData] = useState<any[]>([]);
+  const [lineData, setLineData] = useState<any[]>([]);
+  const [flows, setFlows] = useState<any[]>([]);
+  const [traffic, setTraffic] = useState<any[]>([]);
 
-  // ===============================
-  // API
-  // ===============================
-  const fetchSummary = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/dashboard/summary`);
-      const json = await res.json();
-
-      setData(json);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const fetchAttackTypes = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/dashboard/attack-types`);
-      const json = await res.json();
-      setPieData(json);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const fetchTimeline = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/dashboard/timeline`);
-      const json = await res.json();
-      setLineData(json);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const fetchAlerts = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/dashboard/alerts`);
-      const json = await res.json();
-      setFlows(json);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const fetchTraffic = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/dashboard/traffic`);
-      const json = await res.json();
-      setTraffic(json);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  // ===============================
-  // INIT
-  // ===============================
   useEffect(() => {
-    const load = () => {
-      fetchSummary();
-      fetchAttackTypes();
-      fetchTimeline();
-      fetchAlerts();
-      fetchTraffic();
-    };
+  const load = async () => {
+    try {
+      const [
+        summary,
+        attackTypes,
+        timeline,
+        alerts,
+        trafficData,
+      ] = await Promise.all([
+        fetchSummary(),
+        fetchAttackTypes(),
+        fetchTimeline(),
+        fetchAlerts(),
+        fetchTraffic(),
+      ]);
 
-    load();
-    const interval = setInterval(load, 5000);
+      setData(summary);
+      setPieData(attackTypes);
+      setLineData(timeline);
+      setFlows(alerts);
+      setTraffic(trafficData);
+    } catch (err) {
+      console.error("API error:", err);
+    }
+  };
 
-    return () => clearInterval(interval);
-  }, []);
+  load();
+  const interval = setInterval(load, 5000);
+
+  return () => clearInterval(interval);
+}, []);
 
   return (
     <div className="min-h-screen bg-[#edf1f7] p-6 font-sans">
