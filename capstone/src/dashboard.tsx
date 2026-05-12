@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, type ReactNode } from "react";
 import {
   Flame,
   AlertTriangle,
@@ -26,28 +26,166 @@ import {
   fetchTimeline,
   fetchAlerts,
   fetchTraffic,
+  type AlertItem,
+  type ChartItem,
+  type SummaryData,
+  type TimelineItem,
+  type TrafficItem,
 } from "./dashboardApi";
 
-// ===============================
-// API BASE URL
-// ===============================
-const API_BASE = " https://cristal-uninstructible-overthinly.ngrok-free.dev";
+const DEFAULT_SUMMARY: SummaryData = {
+  dangerLevel: "위험",
+  attackCount: 0,
+  realtimeStatus: "ACTIVE",
+  averageRisk: 0,
+};
+const ALERTS_PER_PAGE = 5;
+const TRAFFIC_PER_PAGE = 10;
+const ATTACK_TYPE_COLORS: Record<string, string> = {
+  "brute force": "#fb923c",
+  "port scan": "#60a5fa",
+  "network scan": "#facc15",
+  ddos: "#22c55e",
+  "syn flood": "#f87171",
+};
+const ATTACK_TYPE_LABELS = [
+  "Brute Force",
+  "Port Scan",
+  "Network Scan",
+  "DDoS",
+  "SYN Flood",
+];
+function getAttackTypeColor(name: string, index = 0) {
+  const label = getAttackTypeLabel(name, index);
+  const normalizedName = label.trim().toLowerCase();
+
+  return ATTACK_TYPE_COLORS[normalizedName];
+}
+
+function getAttackTypeLabel(name: string, index = 0) {
+  const normalizedName = name.trim().toLowerCase().replace(/[_-]/g, " ");
+
+  if (normalizedName.includes("brute")) {
+    return "Brute Force";
+  }
+  if (normalizedName.includes("port") && normalizedName.includes("scan")) {
+    return "Port Scan";
+  }
+  if (normalizedName.includes("network") && normalizedName.includes("scan")) {
+    return "Network Scan";
+  }
+  if (normalizedName.includes("ddos")) {
+    return "DDoS";
+  }
+  if (normalizedName.includes("syn") && normalizedName.includes("flood")) {
+    return "SYN Flood";
+  }
+
+  return ATTACK_TYPE_LABELS[index % ATTACK_TYPE_LABELS.length];
+}
+
+function combineAttackTypes(items: ChartItem[]) {
+  const grouped = new Map<string, number>();
+
+  items.forEach((item, index) => {
+    const label = getAttackTypeLabel(item.name, index);
+    grouped.set(label, (grouped.get(label) ?? 0) + item.value);
+  });
+
+  return ATTACK_TYPE_LABELS.map((label) => ({
+    name: label,
+    value: grouped.get(label) ?? 0,
+  })).filter((item) => item.value > 0);
+}
+
+interface PieLabelProps {
+  cx?: number;
+  cy?: number;
+  midAngle?: number;
+  innerRadius?: number;
+  outerRadius?: number;
+  percent?: number;
+}
+
+function renderPieLabel({
+  cx = 0,
+  cy = 0,
+  midAngle = 0,
+  innerRadius = 0,
+  outerRadius = 0,
+  percent,
+}: PieLabelProps) {
+  if (!percent) return "";
+
+  const radius = innerRadius + (outerRadius - innerRadius) * 0.58;
+  const angle = (-midAngle * Math.PI) / 180;
+  const x = cx + radius * Math.cos(angle);
+  const y = cy + radius * Math.sin(angle);
+
+  return (
+    <text
+      x={x}
+      y={y}
+      fill="#ffffff"
+      fontSize={14}
+      fontWeight={700}
+      textAnchor="middle"
+      dominantBaseline="central"
+    >
+      {`${Math.round(percent * 100)}%`}
+    </text>
+  );
+}
+
+function getPageButtons(currentPage: number, pageCount: number) {
+  const pages = new Set<number>([1, pageCount]);
+  const start = Math.max(1, currentPage - 2);
+  const end = Math.min(pageCount, currentPage + 2);
+
+  for (let page = start; page <= end; page += 1) {
+    pages.add(page);
+  }
+
+  const sortedPages = Array.from(pages).sort((a, b) => a - b);
+  const buttons: Array<number | string> = [];
+
+  sortedPages.forEach((page) => {
+    const previous = buttons[buttons.length - 1];
+    if (typeof previous === "number" && page - previous > 1) {
+      buttons.push(`ellipsis-${previous}-${page}`);
+    }
+    buttons.push(page);
+  });
+
+  return buttons;
+}
 
 export default function Dashboard() {
   // ===============================
   // STATE
   // ===============================
-  const [data, setData] = useState({
-    dangerLevel: "위험",
-    attackCount: 0,
-    realtimeStatus: "ACTIVE",
-    averageRisk: 0,
-  });
+  const [data, setData] = useState<SummaryData>(DEFAULT_SUMMARY);
 
-  const [pieData, setPieData] = useState<any[]>([]);
-  const [lineData, setLineData] = useState<any[]>([]);
-  const [flows, setFlows] = useState<any[]>([]);
-  const [traffic, setTraffic] = useState<any[]>([]);
+  const [pieData, setPieData] = useState<ChartItem[]>([]);
+  const [lineData, setLineData] = useState<TimelineItem[]>([]);
+  const [flows, setFlows] = useState<AlertItem[]>([]);
+  const [traffic, setTraffic] = useState<TrafficItem[]>([]);
+  const [alertPage, setAlertPage] = useState(1);
+  const [trafficPage, setTrafficPage] = useState(1);
+  const [trafficPageCount, setTrafficPageCount] = useState(1);
+  const [trafficHasNext, setTrafficHasNext] = useState(false);
+  const chartData = useMemo(() => combineAttackTypes(pieData), [pieData]);
+  const currentAttackType =
+    chartData.reduce<ChartItem | null>(
+      (top, item) => (!top || item.value > top.value ? item : top),
+      null
+    )?.name ?? "SSH Brute Force";
+  const alertPageCount = Math.max(1, Math.ceil(flows.length / ALERTS_PER_PAGE));
+  const pagedFlows = flows.slice(
+    (alertPage - 1) * ALERTS_PER_PAGE,
+    alertPage * ALERTS_PER_PAGE
+  );
+  const pagedTraffic = traffic;
 
   useEffect(() => {
   const load = async () => {
@@ -57,20 +195,19 @@ export default function Dashboard() {
         attackTypes,
         timeline,
         alerts,
-        trafficData,
       ] = await Promise.all([
         fetchSummary(),
         fetchAttackTypes(),
         fetchTimeline(),
         fetchAlerts(),
-        fetchTraffic(),
       ]);
 
-      setData(summary);
+      if (summary) {
+        setData(summary);
+      }
       setPieData(attackTypes);
       setLineData(timeline);
       setFlows(alerts);
-      setTraffic(trafficData);
     } catch (err) {
       console.error("API error:", err);
     }
@@ -82,6 +219,30 @@ export default function Dashboard() {
   return () => clearInterval(interval);
 }, []);
 
+  useEffect(() => {
+    const loadTraffic = async () => {
+      try {
+        const trafficData = await fetchTraffic(trafficPage, TRAFFIC_PER_PAGE);
+        setTraffic(trafficData.items);
+        setTrafficPageCount((pageCount) =>
+          Math.max(pageCount, trafficData.totalPages)
+        );
+        setTrafficHasNext(trafficData.hasNext);
+      } catch (err) {
+        console.error("Traffic API error:", err);
+      }
+    };
+
+    loadTraffic();
+    const interval = setInterval(loadTraffic, 5000);
+
+    return () => clearInterval(interval);
+  }, [trafficPage]);
+
+  useEffect(() => {
+    setAlertPage((page) => Math.min(page, alertPageCount));
+  }, [alertPageCount]);
+
   return (
     <div className="min-h-screen bg-[#edf1f7] p-6 font-sans">
       {/* HEADER */}
@@ -91,7 +252,7 @@ export default function Dashboard() {
         </h1>
 
         <p className="text-sm opacity-90">
-          현재 SSH Brute Force 공격이 점증 발생 중
+          현재 {currentAttackType} 공격이 점증 발생 중
         </p>
       </div>
 
@@ -138,25 +299,36 @@ export default function Dashboard() {
               <ResponsiveContainer width="100%" height={220}>
                 <PieChart>
                   <Pie
-                    data={pieData}
+                    data={chartData}
                     dataKey="value"
                     outerRadius={90}
                     innerRadius={0}
                     stroke="#fff"
+                    strokeWidth={2}
+                    label={renderPieLabel}
+                    labelLine={false}
+                    isAnimationActive={false}
                   >
-                    {pieData.map((item, i) => (
+                    {chartData.map((item, i) => (
                       <Cell
-                        key={i}
-                        fill={i === 0 ? "#f5a623" : "#4a90e2"}
+                        key={item.name}
+                        fill={getAttackTypeColor(item.name, i)}
                       />
                     ))}
                   </Pie>
                 </PieChart>
               </ResponsiveContainer>
 
-              <div className="flex justify-between text-sm mt-2">
-                <span className="text-orange-400">Brute Force</span>
-                <span className="text-blue-400">Port Scan</span>
+              <div className="flex flex-wrap justify-between gap-x-4 gap-y-2 text-sm mt-2">
+                {ATTACK_TYPE_LABELS.map((label) => (
+                  <span
+                    key={label}
+                    className="whitespace-nowrap"
+                    style={{ color: getAttackTypeColor(label) }}
+                  >
+                    {label}
+                  </span>
+                ))}
               </div>
             </div>
 
@@ -211,7 +383,7 @@ export default function Dashboard() {
           </div>
 
           <div className="space-y-3">
-            {flows.map((item, i) => (
+            {pagedFlows.map((item, i) => (
               <div
                 key={i}
                 className="flex justify-between bg-[#33445d] rounded-lg px-4 py-3"
@@ -222,11 +394,49 @@ export default function Dashboard() {
             ))}
           </div>
 
-          <div className="flex justify-center gap-5 mt-5 text-sm text-gray-300">
-            <span>1</span>
-            <span>2</span>
-            <span>3</span>
-            <span>...</span>
+          <div className="flex justify-center items-center gap-4 mt-5">
+            <button
+              type="button"
+              onClick={() => setAlertPage((page) => Math.max(1, page - 1))}
+              disabled={alertPage === 1}
+              className="bg-[#4a5568] px-4 py-2 rounded enabled:cursor-pointer disabled:cursor-default disabled:opacity-40"
+            >
+              Previous
+            </button>
+
+            <div className="flex items-center gap-2">
+              {getPageButtons(alertPage, alertPageCount).map((page) =>
+                typeof page === "number" ? (
+                  <button
+                    key={page}
+                    type="button"
+                    onClick={() => setAlertPage(page)}
+                    className={`h-8 min-w-8 rounded px-2 transition ${
+                      alertPage === page
+                        ? "bg-blue-500 text-white"
+                        : "hover:bg-[#33445d]"
+                    }`}
+                  >
+                    {page}
+                  </button>
+                ) : (
+                  <span key={page} className="px-1 text-gray-300">
+                    ...
+                  </span>
+                )
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                setAlertPage((page) => Math.min(alertPageCount, page + 1))
+              }
+              disabled={alertPage === alertPageCount}
+              className="bg-blue-500 px-4 py-2 rounded enabled:cursor-pointer disabled:cursor-default disabled:opacity-40"
+            >
+              Next
+            </button>
           </div>
         </Panel>
       </div>
@@ -270,7 +480,7 @@ export default function Dashboard() {
             </thead>
 
             <tbody>
-              {traffic.map((row, i) => (
+              {pagedTraffic.map((row, i) => (
                 <tr
                   key={i}
                   className="border-t border-[#41506a] hover:bg-[#34455b]"
@@ -304,16 +514,46 @@ export default function Dashboard() {
 
         {/* PAGING */}
         <div className="flex justify-center items-center gap-4 mt-5">
-          <button className="bg-[#4a5568] px-4 py-2 rounded">
+          <button
+            type="button"
+            onClick={() => setTrafficPage((page) => Math.max(1, page - 1))}
+            disabled={trafficPage === 1}
+            className="bg-[#4a5568] px-4 py-2 rounded enabled:cursor-pointer disabled:cursor-default disabled:opacity-40"
+          >
             Previous
           </button>
 
-          <span>1</span>
-          <span>2</span>
-          <span>3</span>
-          <span>...</span>
+          <div className="flex items-center gap-2">
+            {getPageButtons(trafficPage, trafficPageCount).map((page) =>
+              typeof page === "number" ? (
+                <button
+                  key={page}
+                  type="button"
+                  onClick={() => setTrafficPage(page)}
+                  className={`h-8 min-w-8 rounded px-2 transition ${
+                    trafficPage === page
+                      ? "bg-blue-500 text-white"
+                      : "hover:bg-[#33445d]"
+                  }`}
+                >
+                  {page}
+                </button>
+              ) : (
+                <span key={page} className="px-1 text-gray-300">
+                  ...
+                </span>
+              )
+            )}
+          </div>
 
-          <button className="bg-blue-500 px-4 py-2 rounded">
+          <button
+            type="button"
+            onClick={() =>
+              setTrafficPage((page) => page + 1)
+            }
+            disabled={!trafficHasNext}
+            className="bg-blue-500 px-4 py-2 rounded enabled:cursor-pointer disabled:cursor-default disabled:opacity-40"
+          >
             Next
           </button>
         </div>
@@ -325,7 +565,14 @@ export default function Dashboard() {
 // ===============================
 // COMPONENTS
 // ===============================
-function Card({ title, value, color, icon }) {
+interface CardProps {
+  title: string;
+  value: string | number;
+  color: string;
+  icon: ReactNode;
+}
+
+function Card({ title, value, color, icon }: CardProps) {
   return (
     <div className="bg-white rounded-2xl shadow-md p-5 border border-gray-200">
       <div className="flex justify-between items-center mb-4">
@@ -341,7 +588,12 @@ function Card({ title, value, color, icon }) {
   );
 }
 
-function Panel({ title, children }) {
+interface PanelProps {
+  title: string;
+  children: ReactNode;
+}
+
+function Panel({ title, children }: PanelProps) {
   return (
     <div className="bg-gradient-to-r from-[#2e3c52] to-[#34445c] text-white rounded-2xl shadow-lg p-6">
       <h2 className="text-2xl font-semibold mb-5">{title}</h2>
@@ -350,7 +602,7 @@ function Panel({ title, children }) {
   );
 }
 
-function Select({ label }) {
+function Select({ label }: { label: string }) {
   return (
     <button className="bg-[#2f3b4c] px-4 rounded-lg text-sm flex items-center gap-2 min-w-[130px] justify-between">
       {label}
@@ -359,10 +611,16 @@ function Select({ label }) {
   );
 }
 
-function Th({ children }) {
+function Th({ children }: { children: ReactNode }) {
   return <th className="px-3 py-3">{children}</th>;
 }
 
-function Td({ children, className = "" }) {
+function Td({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
   return <td className={`px-3 py-3 ${className}`}>{children}</td>;
 }
