@@ -4,7 +4,11 @@ module.exports = {
     "./src/**/*.{js,ts,jsx,tsx}"
   ],
   theme: {
-    extend: {},
+    extend: {
+      fontfamily: {
+        korean: ['"Malgun Gothic"', '"Nanum Gothic"', "sans-serif"],
+      },
+    },
   },
   plugins: [],
 }

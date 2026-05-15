@@ -20,6 +20,14 @@ export interface TimelineItem {
 export interface AlertItem {
   level: string;
   ip: string;
+  flowId: string;
+  srcIp: string;
+  srcPort: string | number;
+  destIp: string;
+  destPort: string | number;
+  prediction: string;
+  action: string;
+  riskScore: string | number;
 }
 
 export interface TrafficItem {
@@ -33,6 +41,30 @@ export interface TrafficItem {
   result: string;
 }
 
+export interface TrafficDetail {
+  flowId: string;
+  srcIp: string;
+  dstIp: string;
+  srcPort: string | number;
+  dstPort: string | number;
+  protocol: string;
+  startTime: string;
+  endTime: string;
+  aiResult: TrafficAiResult | null;
+}
+
+export interface TrafficAiResult {
+  id?: string | number;
+  modelName: string;
+  prediction: string;
+  attackType: string;
+  confidence: number | string;
+  riskScore: number | string;
+  action: string;
+  actionDetail: string;
+  analyzedAt: string;
+}
+
 export interface TrafficPageResult {
   items: TrafficItem[];
   totalPages: number;
@@ -43,6 +75,14 @@ export interface AIResult {
   risk: string;
   detect: string;
   percent: string;
+}
+
+interface AiResultRow {
+  prediction?: string;
+  attackType?: string;
+  riskScore?: string | number;
+  action?: string;
+  actionDetail?: string;
 }
 
 async function request<T>(url: string): Promise<T | null> {
@@ -101,6 +141,62 @@ function getFlowLevel(row: any): string {
   return "정상";
 }
 
+function getPrediction(row: any): string {
+  return String(
+    row.prediction ??
+      row.pridiction ??
+      row.attackType ??
+      row.result ??
+      row.aiResult ??
+      "-"
+  );
+}
+
+function getFirstAiResult(row: any): AiResultRow | null {
+  const direct = row.aiResult ?? row.ai_result ?? row.resultDetail;
+  if (direct && typeof direct === "object") return direct;
+
+  const list = row.aiResults ?? row.ai_results ?? row.results;
+  if (Array.isArray(list) && list.length > 0) return list[0];
+
+  return null;
+}
+
+function isNormalPrediction(value: unknown): boolean {
+  const prediction = String(value ?? "").trim().toLowerCase();
+
+  return ["normal", "benign", "safe", "?뺤긽", "?덉쟾"].some((normalValue) =>
+    prediction.includes(normalValue)
+  );
+}
+
+function isAttackTraffic(row: any): boolean {
+  const values = [
+    row.prediction,
+    row.pridiction,
+    row.result,
+    row.aiResult,
+    row.attackType,
+    row.level,
+    row.risk,
+    row.status,
+  ]
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => String(value).trim().toLowerCase());
+
+  if (
+    values.some((value) =>
+      ["normal", "benign", "safe", "정상", "안전"].some((normalValue) =>
+        value.includes(normalValue)
+      )
+    )
+  ) {
+    return false;
+  }
+
+  return getFlowLevel(row) !== "정상";
+}
+
 export async function fetchSummary(): Promise<SummaryData | null> {
   const json: any = await request("/api/dashboard/summary");
   if (!json) return null;
@@ -141,14 +237,69 @@ export async function fetchAlerts(): Promise<AlertItem[]> {
     ? json
     : json.content ?? json.data ?? json.flows ?? json.items ?? [];
 
-  return rows.map((item) => ({
-    level: getFlowLevel(item),
-    ip: `${item.srcIp ?? item.sourceIp ?? "-"} -> ${
-      item.destIp ?? item.dstIp ?? item.destinationIp ?? "-"
-    }:${item.destPort ?? item.destport ?? item.dstPort ?? item.port ?? "-"} · ${formatTcpFlags(
-      item
-    )}`,
-  }));
+  const rowsWithAiResults = await Promise.all(
+    rows.map(async (item) => {
+      const flowId = item.flowId ?? item.id;
+      const embeddedAiResult = getFirstAiResult(item);
+
+      if (embeddedAiResult || flowId === undefined || flowId === null) {
+        return { item, aiResult: embeddedAiResult };
+      }
+
+      const aiResults: any[] | null = await request(
+        `/api/flows/${flowId}/ai-results`
+      );
+
+      return {
+        item,
+        aiResult:
+          Array.isArray(aiResults) && aiResults.length > 0 ? aiResults[0] : null,
+      };
+    })
+  );
+
+  return rowsWithAiResults.filter(({ item, aiResult }) => {
+    if (aiResult) {
+      return !isNormalPrediction(
+        aiResult.prediction ?? aiResult.attackType ?? item.prediction
+      );
+    }
+
+    return isAttackTraffic(item);
+  }).map(({ item, aiResult }) => {
+    const srcIp = item.srcIp ?? item.sourceIp ?? "-";
+    const srcPort = item.srcPort ?? item.sourcePort ?? item.sport ?? "-";
+    const destIp = item.destIp ?? item.dstIp ?? item.destinationIp ?? "-";
+    const destPort =
+      item.destPort ?? item.destport ?? item.dstPort ?? item.port ?? "-";
+    const prediction = aiResult ? getPrediction(aiResult) : getPrediction(item);
+
+    return {
+      level: getFlowLevel(item),
+      ip: `${srcIp}:${srcPort} -> ${destIp}:${destPort} · ${formatTcpFlags(
+        item
+      )}`,
+      flowId: String(item.flowId ?? item.id ?? "-"),
+      srcIp,
+      srcPort,
+      destIp,
+      destPort,
+      prediction,
+      action:
+        aiResult?.action ??
+        aiResult?.actionDetail ??
+        item.action ??
+        item.recommendedAction ??
+        item.responseAction ??
+        "-",
+      riskScore:
+        aiResult?.riskScore ??
+        item.riskScore ??
+        item.risk_score ??
+        item.score ??
+        "-",
+    };
+  });
 }
 
 function toTrafficItems(rows: any[]): TrafficItem[] {
@@ -162,6 +313,38 @@ function toTrafficItems(rows: any[]): TrafficItem[] {
     flag: formatTcpFlags(row),
     result: row.result ?? row.aiResult ?? "분석 완료",
   }));
+}
+
+function toTrafficAiResult(row: any): TrafficAiResult | null {
+  if (!row || typeof row !== "object") return null;
+
+  return {
+    id: row.id,
+    modelName: row.modelName ?? "-",
+    prediction: row.prediction ?? "-",
+    attackType: row.attackType ?? "-",
+    confidence: row.confidence ?? "-",
+    riskScore: row.riskScore ?? "-",
+    action: row.action ?? "-",
+    actionDetail: row.actionDetail ?? "-",
+    analyzedAt: row.analyzedAt ?? "-",
+  };
+}
+
+function toTrafficDetail(row: any, aiResult?: any): TrafficDetail {
+  const embeddedAiResult = getFirstAiResult(row);
+
+  return {
+    flowId: String(row.flowId ?? row.id ?? ""),
+    srcIp: row.srcIp ?? row.sourceIp ?? "-",
+    dstIp: row.destIp ?? row.dstIp ?? row.destinationIp ?? "-",
+    srcPort: row.srcPort ?? row.sourcePort ?? row.sport ?? "-",
+    dstPort: row.destPort ?? row.destport ?? row.dstPort ?? row.port ?? "-",
+    protocol: row.protocol ?? "-",
+    startTime: row.startTime ?? "-",
+    endTime: row.endTime ?? "-",
+    aiResult: toTrafficAiResult(aiResult ?? embeddedAiResult),
+  };
 }
 
 export async function fetchTraffic(
@@ -198,6 +381,26 @@ export async function fetchTraffic(
     totalPages: Math.max(1, totalPages, page + (hasNext ? 1 : 0)),
     hasNext,
   };
+}
+
+export async function fetchTrafficDetail(
+  flowId: string | number
+): Promise<TrafficDetail | null> {
+  const detail: any = await request(`/api/flows/${flowId}`);
+  if (!detail) return null;
+
+  if (detail.aiResult || detail.ai_result || detail.resultDetail) {
+    return toTrafficDetail(detail);
+  }
+
+  const aiResults: any[] | null = await request(
+    `/api/flows/${flowId}/ai-results`
+  );
+
+  return toTrafficDetail(
+    detail,
+    Array.isArray(aiResults) && aiResults.length > 0 ? aiResults[0] : null
+  );
 }
 
 export async function getAIResult(flowId: number): Promise<AIResult | null> {
