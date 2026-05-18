@@ -39,6 +39,9 @@ export interface TrafficItem {
   protocol: string;
   flag: string;
   result: string;
+  attackType: string;
+  startTime: string;
+  endTime: string;
 }
 
 export interface TrafficDetail {
@@ -50,7 +53,18 @@ export interface TrafficDetail {
   protocol: string;
   startTime: string;
   endTime: string;
+  tcpFlags: string;
+  tcpFlagCounts: TrafficTcpFlagCounts;
   aiResult: TrafficAiResult | null;
+}
+
+export interface TrafficTcpFlagCounts {
+  syn: number;
+  ack: number;
+  fin: number;
+  rst: number;
+  psh: number;
+  urg: number;
 }
 
 export interface TrafficAiResult {
@@ -111,14 +125,26 @@ function getCount(row: any, key: string): number {
   return typeof value === "number" ? value : Number(value ?? 0);
 }
 
+function getTcpFlagCounts(row: any): TrafficTcpFlagCounts {
+  return {
+    syn: getCount(row, "synCount"),
+    ack: getCount(row, "ackCount"),
+    fin: getCount(row, "finCount"),
+    rst: getCount(row, "rstCount"),
+    psh: getCount(row, "pshCount"),
+    urg: getCount(row, "urgCount"),
+  };
+}
+
 function formatTcpFlags(row: any): string {
+  const counts = getTcpFlagCounts(row);
   const flagCounts: Array<[string, number]> = [
-    ["SYN", getCount(row, "synCount")],
-    ["ACK", getCount(row, "ackCount")],
-    ["FIN", getCount(row, "finCount")],
-    ["RST", getCount(row, "rstCount")],
-    ["PSH", getCount(row, "pshCount")],
-    ["URG", getCount(row, "urgCount")],
+    ["SYN", counts.syn],
+    ["ACK", counts.ack],
+    ["FIN", counts.fin],
+    ["RST", counts.rst],
+    ["PSH", counts.psh],
+    ["URG", counts.urg],
   ];
   const flags = flagCounts
     .filter(([, count]) => count > 0)
@@ -303,16 +329,25 @@ export async function fetchAlerts(): Promise<AlertItem[]> {
 }
 
 function toTrafficItems(rows: any[]): TrafficItem[] {
-  return rows.map((row: any) => ({
-    flowId: String(row.flowId ?? row.id ?? ""),
-    time: row.startTime ? row.startTime.split("T")[1] ?? row.startTime : "-",
-    srcIp: row.srcIp ?? row.sourceIp ?? "-",
-    dstIp: row.destIp ?? row.dstIp ?? row.destinationIp ?? "-",
-    port: row.destPort ?? row.destport ?? row.dstPort ?? row.port ?? 0,
-    protocol: row.protocol ?? "-",
-    flag: formatTcpFlags(row),
-    result: row.result ?? row.aiResult ?? "분석 완료",
-  }));
+  return rows.map((row: any) => {
+    const aiResult = getFirstAiResult(row);
+    const prediction = aiResult ? getPrediction(aiResult) : getPrediction(row);
+
+    return {
+      flowId: String(row.flowId ?? row.id ?? ""),
+      time: row.startTime ? row.startTime.split("T")[1] ?? row.startTime : "-",
+      srcIp: row.srcIp ?? row.sourceIp ?? "-",
+      dstIp: row.destIp ?? row.dstIp ?? row.destinationIp ?? "-",
+      port: row.destPort ?? row.destport ?? row.dstPort ?? row.port ?? 0,
+      protocol: row.protocol ?? "-",
+      flag: formatTcpFlags(row),
+      result: prediction === "-" ? "분석 완료" : prediction,
+      attackType:
+        aiResult?.attackType ?? row.attackType ?? row.type ?? prediction,
+      startTime: row.startTime ?? "-",
+      endTime: row.endTime ?? "-",
+    };
+  });
 }
 
 function toTrafficAiResult(row: any): TrafficAiResult | null {
@@ -343,6 +378,8 @@ function toTrafficDetail(row: any, aiResult?: any): TrafficDetail {
     protocol: row.protocol ?? "-",
     startTime: row.startTime ?? "-",
     endTime: row.endTime ?? "-",
+    tcpFlags: formatTcpFlags(row),
+    tcpFlagCounts: getTcpFlagCounts(row),
     aiResult: toTrafficAiResult(aiResult ?? embeddedAiResult),
   };
 }

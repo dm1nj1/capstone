@@ -1,10 +1,11 @@
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect, useMemo, type ReactNode } from "react";
 import {
   Flame,
   AlertTriangle,
   Activity,
   Search,
   ChevronDown,
+  X,
 } from "lucide-react";
 
 import {
@@ -26,10 +27,12 @@ import {
   fetchTimeline,
   fetchAlerts,
   fetchTraffic,
+  fetchTrafficDetail,
   type AlertItem,
   type ChartItem,
   type SummaryData,
   type TimelineItem,
+  type TrafficDetail,
   type TrafficItem,
 } from "./dashboardApi";
 
@@ -56,9 +59,150 @@ const ATTACK_TYPE_LABELS = [
   "SYN Flood",
 ];
 const DEFAULT_ATTACK_COLOR = "#60a5fa";
+type PieMode = "all" | "today";
+
+function normalizeAttackType(name: string) {
+  const normalized = name.trim().toLowerCase().replace(/[_-]/g, " ");
+
+  if (normalized.includes("brute")) return "brute force";
+  if (normalized.includes("port")) return "port scan";
+  if (normalized.includes("network")) return "network scan";
+  if (normalized.includes("ddos")) return "ddos";
+  if (normalized.includes("syn")) return "syn flood";
+
+  return normalized;
+}
 
 function getAttackTypeColor(name: string) {
-  return ATTACK_TYPE_COLORS[name.trim().toLowerCase()] ?? DEFAULT_ATTACK_COLOR;
+  return ATTACK_TYPE_COLORS[normalizeAttackType(name)] ?? DEFAULT_ATTACK_COLOR;
+}
+
+function matchesSearch(values: Array<string | number | undefined>, search: string) {
+  const keyword = search.trim().toLowerCase();
+
+  if (!keyword) return true;
+
+  return values.some((value) =>
+    String(value ?? "")
+      .toLowerCase()
+      .includes(keyword)
+  );
+}
+
+function getTrafficDate(row: TrafficItem) {
+  const parsed = new Date(row.startTime);
+
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isSameLocalDay(a: Date, b: Date) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function formatMonthDay(date: Date) {
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function getTrafficDateKey(row: TrafficItem) {
+  const date = getTrafficDate(row);
+
+  if (!date) return row.startTime && row.startTime !== "-" ? row.startTime : "-";
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function uniqueSorted(values: Array<string | number>) {
+  return Array.from(new Set(values.map((value) => String(value))))
+    .filter((value) => value && value !== "-")
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function buildOrderedAttackData(items: ChartItem[]) {
+  const counts = new Map<string, number>();
+
+  items.forEach((item) => {
+    const key = normalizeAttackType(item.name);
+    counts.set(key, (counts.get(key) ?? 0) + Number(item.value ?? 0));
+  });
+
+  const orderedItems = ATTACK_TYPE_LABELS.map((label) => ({
+    name: label,
+    value: counts.get(normalizeAttackType(label)) ?? 0,
+  }));
+
+  return orderedItems.some((item) => item.value > 0) ? orderedItems : items;
+}
+
+function buildTodayAttackData(rows: TrafficItem[]) {
+  const today = new Date();
+  const counts = new Map<string, number>();
+
+  rows.forEach((row) => {
+    const date = getTrafficDate(row);
+    if (!date || !isSameLocalDay(date, today)) return;
+
+    const attackName = row.attackType || row.result;
+    const key = normalizeAttackType(attackName);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  });
+
+  return ATTACK_TYPE_LABELS.map((label) => ({
+    name: label,
+    value: counts.get(normalizeAttackType(label)) ?? 0,
+  }));
+}
+
+function buildLastSevenDaysData(rows: TrafficItem[]) {
+  const today = new Date();
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(today);
+    date.setHours(0, 0, 0, 0);
+    date.setDate(today.getDate() - (6 - index));
+
+    return date;
+  });
+
+  return days.map((day) => ({
+    t: formatMonthDay(day),
+    v: rows.filter((row) => {
+      const date = getTrafficDate(row);
+      return date ? isSameLocalDay(date, day) : false;
+    }).length,
+  }));
+}
+
+function buildLastTwentyFourHoursData(rows: TrafficItem[], fallback: TimelineItem[]) {
+  const now = new Date();
+  const hours = Array.from({ length: 24 }, (_, index) => {
+    const date = new Date(now);
+    date.setMinutes(0, 0, 0);
+    date.setHours(now.getHours() - (23 - index));
+
+    return date;
+  });
+
+  const hourly = hours.map((hour) => ({
+    t: `${hour.getHours()}시`,
+    v: rows.filter((row) => {
+      const date = getTrafficDate(row);
+
+      return (
+        date !== null &&
+        date >= hour &&
+        date < new Date(hour.getTime() + 60 * 60 * 1000)
+      );
+    }).length,
+  }));
+
+  return hourly.some((item) => item.v > 0) ? hourly : fallback;
 }
 
 interface PieLabelProps {
@@ -68,6 +212,7 @@ interface PieLabelProps {
   innerRadius?: number;
   outerRadius?: number;
   percent?: number;
+  name?: string;
 }
 
 function renderPieLabel({
@@ -77,6 +222,7 @@ function renderPieLabel({
   innerRadius = 0,
   outerRadius = 0,
   percent,
+  name = "",
 }: PieLabelProps) {
   if (!percent) return "";
 
@@ -92,6 +238,8 @@ function renderPieLabel({
       fill="#ffffff"
       fontSize={14}
       fontWeight={700}
+      stroke={getAttackTypeColor(name)}
+      strokeWidth={0.6}
       textAnchor="middle"
       dominantBaseline="central"
     >
@@ -112,24 +260,138 @@ export default function Dashboard() {
   const [traffic, setTraffic] = useState<TrafficItem[]>([]);
   const [alertPage, setAlertPage] = useState(1);
   const [trafficPage, setTrafficPage] = useState(1);
+  const [alertSearch, setAlertSearch] = useState("");
+  const [trafficSearch, setTrafficSearch] = useState("");
+  const [sourceIpFilter, setSourceIpFilter] = useState("");
+  const [dateFilter, setDateFilter] = useState("");
+  const [portFilter, setPortFilter] = useState("");
+  const [pieMode, setPieMode] = useState<PieMode>("all");
+  const [selectedTraffic, setSelectedTraffic] = useState<TrafficDetail | null>(
+    null
+  );
+  const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState("");
   const currentAttackType =
     pieData.reduce<ChartItem | null>(
       (top, item) => (!top || item.value > top.value ? item : top),
       null
     )?.name ?? "SSH Brute Force";
-  const alertPageCount = Math.max(1, Math.ceil(flows.length / ALERTS_PER_PAGE));
-  const pagedFlows = flows.slice(
+  const allAttackChartData = useMemo(
+    () => buildOrderedAttackData(pieData),
+    [pieData]
+  );
+  const todayAttackChartData = useMemo(
+    () => buildTodayAttackData(traffic),
+    [traffic]
+  );
+  const chartData =
+    pieMode === "all" ? allAttackChartData : todayAttackChartData;
+  const weeklyAttackData = useMemo(
+    () => buildLastSevenDaysData(traffic),
+    [traffic]
+  );
+  const hourlyAttackData = useMemo(
+    () => buildLastTwentyFourHoursData(traffic, lineData),
+    [lineData, traffic]
+  );
+  const filteredFlows = useMemo(
+    () =>
+      flows.filter((item) =>
+        matchesSearch(
+            [
+              item.level,
+              item.ip,
+              item.flowId,
+              item.srcIp,
+              item.srcPort,
+              item.destIp,
+              item.destPort,
+              item.prediction,
+              item.action,
+              item.riskScore,
+            ],
+            alertSearch
+          )
+      ),
+    [alertSearch, flows]
+  );
+  const filteredTraffic = useMemo(
+    () =>
+      traffic.filter((row) => {
+        const matchesSource = !sourceIpFilter || row.srcIp === sourceIpFilter;
+        const matchesDate = !dateFilter || getTrafficDateKey(row) === dateFilter;
+        const matchesPort = !portFilter || String(row.port) === portFilter;
+
+        return (
+          matchesSource &&
+          matchesDate &&
+          matchesPort &&
+          matchesSearch(
+            [
+              row.flowId,
+              row.time,
+              row.srcIp,
+              row.dstIp,
+              row.port,
+              row.protocol,
+              row.flag,
+              row.result,
+              row.attackType,
+            ],
+            trafficSearch
+          )
+        );
+      }),
+    [dateFilter, portFilter, sourceIpFilter, traffic, trafficSearch]
+  );
+  const sourceIpOptions = useMemo(
+    () => uniqueSorted(traffic.map((row) => row.srcIp)),
+    [traffic]
+  );
+  const dateOptions = useMemo(
+    () => uniqueSorted(traffic.map((row) => getTrafficDateKey(row))),
+    [traffic]
+  );
+  const portOptions = useMemo(
+    () => uniqueSorted(traffic.map((row) => row.port)),
+    [traffic]
+  );
+  const alertPageCount = Math.max(
+    1,
+    Math.ceil(filteredFlows.length / ALERTS_PER_PAGE)
+  );
+  const pagedFlows = filteredFlows.slice(
     (alertPage - 1) * ALERTS_PER_PAGE,
     alertPage * ALERTS_PER_PAGE
   );
   const trafficPageCount = Math.max(
     1,
-    Math.ceil(traffic.length / TRAFFIC_PER_PAGE)
+    Math.ceil(filteredTraffic.length / TRAFFIC_PER_PAGE)
   );
-  const pagedTraffic = traffic.slice(
+  const pagedTraffic = filteredTraffic.slice(
     (trafficPage - 1) * TRAFFIC_PER_PAGE,
     trafficPage * TRAFFIC_PER_PAGE
   );
+
+  const openTrafficDetail = async (flowId: string) => {
+    setDetailError("");
+    setDetailLoadingId(flowId);
+
+    try {
+      const detail = await fetchTrafficDetail(flowId);
+
+      if (detail) {
+        setSelectedTraffic(detail);
+      } else {
+        setDetailError("상세 데이터를 불러오지 못했습니다.");
+      }
+    } catch (err) {
+      console.error("Traffic detail error:", err);
+      setDetailError("상세 데이터를 불러오지 못했습니다.");
+    } finally {
+      setDetailLoadingId(null);
+    }
+  };
 
   useEffect(() => {
   const load = async () => {
@@ -145,7 +407,7 @@ export default function Dashboard() {
         fetchAttackTypes(),
         fetchTimeline(),
         fetchAlerts(),
-        fetchTraffic(),
+        fetchTraffic(1, 500),
       ]);
 
       if (summary) {
@@ -154,7 +416,7 @@ export default function Dashboard() {
       setPieData(attackTypes);
       setLineData(timeline);
       setFlows(alerts);
-      setTraffic(trafficData);
+      setTraffic(trafficData.items);
     } catch (err) {
       console.error("API error:", err);
     }
@@ -173,6 +435,14 @@ export default function Dashboard() {
   useEffect(() => {
     setTrafficPage((page) => Math.min(page, trafficPageCount));
   }, [trafficPageCount]);
+
+  useEffect(() => {
+    setAlertPage(1);
+  }, [alertSearch]);
+
+  useEffect(() => {
+    setTrafficPage(1);
+  }, [dateFilter, portFilter, sourceIpFilter, trafficSearch]);
 
   return (
     <div className="min-h-screen bg-[#edf1f7] p-6" style={{ fontFamily: "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif", }}>
@@ -226,12 +496,34 @@ export default function Dashboard() {
     <div className="grid grid-cols-2 gap-4">
       {/* PIE */}
       <div className="bg-[#33445d] rounded-2xl p-5">
-        <p className="text-gray-300 text-sm mb-3">공격 유형</p>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="text-gray-300 text-sm">공격 유형</p>
+          <div className="flex rounded-lg bg-[#2f3b4c] p-1 text-xs">
+            <button
+              type="button"
+              onClick={() => setPieMode("all")}
+              className={`rounded-md px-3 py-1 transition ${
+                pieMode === "all" ? "bg-blue-500 text-white" : "text-gray-300"
+              }`}
+            >
+              전체
+            </button>
+            <button
+              type="button"
+              onClick={() => setPieMode("today")}
+              className={`rounded-md px-3 py-1 transition ${
+                pieMode === "today" ? "bg-blue-500 text-white" : "text-gray-300"
+              }`}
+            >
+              오늘
+            </button>
+          </div>
+        </div>
 
         <ResponsiveContainer width="100%" height={220}>
           <PieChart>
             <Pie
-              data={pieData}
+              data={chartData}
               dataKey="value"
               outerRadius={90}
               innerRadius={0}
@@ -241,7 +533,7 @@ export default function Dashboard() {
               labelLine={false}
               isAnimationActive={false}
             >
-              {pieData.map((item) => (
+              {chartData.map((item) => (
                 <Cell
                   key={item.name}
                   fill={getAttackTypeColor(item.name)}
@@ -266,10 +558,10 @@ export default function Dashboard() {
 
       {/* LINE */}
       <div className="bg-[#33445d] rounded-2xl p-5">
-        <p className="text-gray-300 text-sm mb-3">시간별 공격</p>
+        <p className="text-gray-300 text-sm mb-3">최근 7일간 공격</p>
 
         <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={lineData}>
+          <LineChart data={weeklyAttackData}>
             <CartesianGrid stroke="#52637a" strokeDasharray="3 3" />
             <XAxis dataKey="t" stroke="#cbd5e1" />
             <YAxis stroke="#cbd5e1" />
@@ -289,10 +581,11 @@ export default function Dashboard() {
   {/* RIGHT PANEL */}
   <Panel title="실시간 알림 로그">
     <div className="bg-[#33445d] rounded-2xl p-5 mb-4">
-      <p className="text-sm text-gray-300 mb-2">최근 공격 추이</p>
+      <p className="text-sm text-gray-300 mb-2">최근 24시간 공격 추이</p>
 
       <ResponsiveContainer width="100%" height={130}>
-        <LineChart data={lineData}>
+        <LineChart data={hourlyAttackData}>
+          <YAxis hide domain={[0, "dataMax"]} />
           <Line
             dataKey="v"
             stroke="#f5a623"
@@ -307,19 +600,46 @@ export default function Dashboard() {
       <input
         className="flex-1 bg-[#33445d] rounded-lg px-4 py-2 text-sm outline-none"
         placeholder="검색"
+        value={alertSearch}
+        onChange={(event) => setAlertSearch(event.target.value)}
       />
     </div>
 
-    <div className="space-y-3">
-      {pagedFlows.map((item, i) => (
-        <div
-          key={i}
-          className="flex justify-between bg-[#33445d] rounded-lg px-4 py-3"
-        >
-          <span className="text-red-400">{item.level}</span>
-          <span>{item.ip}</span>
-        </div>
-      ))}
+    <div className="overflow-x-auto rounded-xl border border-[#41506a]">
+      <table className="min-w-[760px] w-full text-sm">
+        <thead className="bg-[#3b4b61] text-left">
+          <tr>
+            <Th>FlowID</Th>
+            <Th>Src IP:Port</Th>
+            <Th>Dest IP:Port</Th>
+            <Th>Prediction</Th>
+            <Th>Action</Th>
+            <Th>RiskScore</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {pagedFlows.map((item) => (
+            <tr
+              key={item.flowId}
+              className="border-t border-[#41506a] hover:bg-[#34455b]"
+            >
+              <Td>{item.flowId}</Td>
+              <Td>{`${item.srcIp}:${item.srcPort}`}</Td>
+              <Td>{`${item.destIp}:${item.destPort}`}</Td>
+              <Td className="text-red-300">{item.prediction}</Td>
+              <Td>{item.action}</Td>
+              <Td>{item.riskScore}</Td>
+            </tr>
+          ))}
+          {pagedFlows.length === 0 && (
+            <tr className="border-t border-[#41506a]">
+              <Td className="text-center text-gray-300" colSpan={6}>
+                검색 결과가 없습니다.
+              </Td>
+            </tr>
+          )}
+        </tbody>
+      </table>
     </div>
 
     <div className="flex justify-center items-center gap-4 mt-5">
@@ -369,7 +689,7 @@ export default function Dashboard() {
 
       {/* BOTTOM TABLE */}
       <Panel title="상세 트래픽 분석">
-        <p className="text-gray-300 text-sm mb-4">
+        <p className="text-gray-400 text-sm mb-4">
           네트워크 트래픽 목록 (검색 및 페이징)
         </p>
 
@@ -380,12 +700,29 @@ export default function Dashboard() {
             <input
               placeholder="Search"
               className="bg-transparent w-full py-2 outline-none text-sm"
+              value={trafficSearch}
+              onChange={(event) => setTrafficSearch(event.target.value)}
             />
           </div>
 
-          <Select label="Source IP" />
-          <Select label="Date Range" />
-          <Select label="Port" />
+          <FilterSelect
+            label="Source IP"
+            value={sourceIpFilter}
+            options={sourceIpOptions}
+            onChange={setSourceIpFilter}
+          />
+          <FilterSelect
+            label="Date Range"
+            value={dateFilter}
+            options={dateOptions}
+            onChange={setDateFilter}
+          />
+          <FilterSelect
+            label="Port"
+            value={portFilter}
+            options={portOptions}
+            onChange={setPortFilter}
+          />
         </div>
 
         {/* TABLE */}
@@ -407,7 +744,7 @@ export default function Dashboard() {
             <tbody>
               {pagedTraffic.map((row, i) => (
                 <tr
-                  key={i}
+                  key={`${row.flowId}-${i}`}
                   className="border-t border-[#41506a] hover:bg-[#34455b]"
                 >
                   <Td>{row.flowId}</Td>
@@ -427,11 +764,27 @@ export default function Dashboard() {
                     {row.result}
                   </Td>
 
-                  <Td className="text-blue-400 cursor-pointer">
-                    [View Details]
+                  <Td>
+                    <button
+                      type="button"
+                      onClick={() => openTrafficDetail(row.flowId)}
+                      disabled={detailLoadingId === row.flowId}
+                      className="text-blue-400 hover:text-blue-300 disabled:cursor-wait disabled:opacity-60"
+                    >
+                      {detailLoadingId === row.flowId
+                        ? "Loading..."
+                        : "[View Details]"}
+                    </button>
                   </Td>
                 </tr>
               ))}
+              {pagedTraffic.length === 0 && (
+                <tr className="border-t border-[#41506a]">
+                  <Td className="text-center text-gray-300" colSpan={8}>
+                    검색 결과가 없습니다.
+                  </Td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -478,6 +831,19 @@ export default function Dashboard() {
           </button>
         </div>
       </Panel>
+
+      {detailError && (
+        <div className="fixed bottom-6 right-6 rounded-lg bg-red-500 px-4 py-3 text-sm font-semibold text-white shadow-lg">
+          {detailError}
+        </div>
+      )}
+
+      {selectedTraffic && (
+        <DetailModal
+          detail={selectedTraffic}
+          onClose={() => setSelectedTraffic(null)}
+        />
+      )}
     </div>
   );
 }
@@ -528,12 +894,126 @@ function Panel({ title, children }: PanelProps) {
   );
 }
 
-function Select({ label }: { label: string }) {
+function FilterSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
   return (
-    <button className="bg-[#2f3b4c] px-4 rounded-lg text-sm flex items-center gap-2 min-w-[130px] justify-between">
-      {label}
-      <ChevronDown size={16} />
-    </button>
+    <div className="relative min-w-[130px]">
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-full w-full appearance-none rounded-lg bg-[#2f3b4c] px-4 py-2 pr-9 text-sm outline-none"
+      >
+        <option value="">{label}</option>
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+      <ChevronDown
+        size={16}
+        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-300"
+      />
+    </div>
+  );
+}
+
+function DetailModal({
+  detail,
+  onClose,
+}: {
+  detail: TrafficDetail;
+  onClose: () => void;
+}) {
+  const aiResult = detail.aiResult;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6">
+      <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-[#2e3c52] text-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-[#41506a] px-6 py-4">
+          <div>
+            <h3 className="text-xl font-bold">트래픽 상세 정보</h3>
+            <p className="mt-1 text-sm text-gray-300">FlowID {detail.flowId}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-full p-2 text-gray-300 transition hover:bg-[#33445d] hover:text-white"
+            aria-label="상세 정보 닫기"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="grid gap-5 p-6 md:grid-cols-2">
+          <div className="rounded-xl bg-[#33445d] p-5">
+            <h4 className="mb-4 font-semibold">Flow 정보</h4>
+            <div className="space-y-3 text-sm">
+              <DetailRow label="Source IP" value={detail.srcIp} />
+              <DetailRow label="Source Port" value={detail.srcPort} />
+              <DetailRow label="Destination IP" value={detail.dstIp} />
+              <DetailRow label="Destination Port" value={detail.dstPort} />
+              <DetailRow label="Protocol" value={detail.protocol} />
+              <DetailRow label="Start Time" value={detail.startTime} />
+              <DetailRow label="End Time" value={detail.endTime} />
+              <DetailRow label="TCP Flags" value={detail.tcpFlags} />
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-[#33445d] p-5">
+            <h4 className="mb-4 font-semibold">AI 분석 결과</h4>
+            {aiResult ? (
+              <div className="space-y-3 text-sm">
+                <DetailRow label="Model" value={aiResult.modelName} />
+                <DetailRow label="Prediction" value={aiResult.prediction} />
+                <DetailRow label="Attack Type" value={aiResult.attackType} />
+                <DetailRow label="Confidence" value={aiResult.confidence} />
+                <DetailRow label="Risk Score" value={aiResult.riskScore} />
+                <DetailRow label="Action" value={aiResult.action} />
+                <DetailRow label="Analyzed At" value={aiResult.analyzedAt} />
+              </div>
+            ) : (
+              <p className="text-sm text-gray-300">AI 분석 결과가 없습니다.</p>
+            )}
+          </div>
+        </div>
+
+        {aiResult?.actionDetail && (
+          <div className="px-6 pb-6">
+            <div className="rounded-xl bg-[#33445d] p-5">
+              <h4 className="mb-3 font-semibold">Action Detail</h4>
+              <p className="whitespace-pre-wrap text-sm text-gray-200">
+                {aiResult.actionDetail}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: string | number;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 border-b border-[#41506a] pb-2 last:border-b-0 last:pb-0">
+      <span className="shrink-0 text-gray-300">{label}</span>
+      <span className="break-all text-right font-semibold">{value}</span>
+    </div>
   );
 }
 
@@ -544,9 +1024,15 @@ function Th({ children }: { children: ReactNode }) {
 function Td({
   children,
   className = "",
+  colSpan,
 }: {
   children: ReactNode;
   className?: string;
+  colSpan?: number;
 }) {
-  return <td className={`px-3 py-3 ${className}`}>{children}</td>;
+  return (
+    <td colSpan={colSpan} className={`px-3 py-3 ${className}`}>
+      {children}
+    </td>
+  );
 }
