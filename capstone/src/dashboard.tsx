@@ -28,6 +28,7 @@ import {
   fetchAlerts,
   fetchTraffic,
   fetchTrafficDetail,
+  type AttackTypePeriod,
   type AlertItem,
   type ChartItem,
   type SummaryData,
@@ -59,7 +60,6 @@ const ATTACK_TYPE_LABELS = [
   "SYN Flood",
 ];
 const DEFAULT_ATTACK_COLOR = "#60a5fa";
-type PieMode = "all" | "today";
 
 function normalizeAttackType(name: string) {
   const normalized = name.trim().toLowerCase().replace(/[_-]/g, " ");
@@ -139,25 +139,6 @@ function buildOrderedAttackData(items: ChartItem[]) {
   }));
 
   return orderedItems.some((item) => item.value > 0) ? orderedItems : items;
-}
-
-function buildTodayAttackData(rows: TrafficItem[]) {
-  const today = new Date();
-  const counts = new Map<string, number>();
-
-  rows.forEach((row) => {
-    const date = getTrafficDate(row);
-    if (!date || !isSameLocalDay(date, today)) return;
-
-    const attackName = row.attackType || row.result;
-    const key = normalizeAttackType(attackName);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  });
-
-  return ATTACK_TYPE_LABELS.map((label) => ({
-    name: label,
-    value: counts.get(normalizeAttackType(label)) ?? 0,
-  }));
 }
 
 function buildLastSevenDaysData(rows: TrafficItem[]) {
@@ -265,7 +246,10 @@ export default function Dashboard() {
   const [sourceIpFilter, setSourceIpFilter] = useState("");
   const [dateFilter, setDateFilter] = useState("");
   const [portFilter, setPortFilter] = useState("");
-  const [pieMode, setPieMode] = useState<PieMode>("all");
+  const [attackTypePeriod, setAttackTypePeriod] =
+    useState<AttackTypePeriod>("all");
+  const [attackTypeLoading, setAttackTypeLoading] = useState(false);
+  const [attackTypeError, setAttackTypeError] = useState("");
   const [selectedTraffic, setSelectedTraffic] = useState<TrafficDetail | null>(
     null
   );
@@ -280,12 +264,8 @@ export default function Dashboard() {
     () => buildOrderedAttackData(pieData),
     [pieData]
   );
-  const todayAttackChartData = useMemo(
-    () => buildTodayAttackData(traffic),
-    [traffic]
-  );
-  const chartData =
-    pieMode === "all" ? allAttackChartData : todayAttackChartData;
+  const chartData = allAttackChartData;
+  const attackTotal = chartData.reduce((total, item) => total + item.value, 0);
   const weeklyAttackData = useMemo(
     () => buildLastSevenDaysData(traffic),
     [traffic]
@@ -398,13 +378,11 @@ export default function Dashboard() {
     try {
       const [
         summary,
-        attackTypes,
         timeline,
         alerts,
         trafficData,
       ] = await Promise.all([
         fetchSummary(),
-        fetchAttackTypes(),
         fetchTimeline(),
         fetchAlerts(),
         fetchTraffic(1, 500),
@@ -413,7 +391,6 @@ export default function Dashboard() {
       if (summary) {
         setData(summary);
       }
-      setPieData(attackTypes);
       setLineData(timeline);
       setFlows(alerts);
       setTraffic(trafficData.items);
@@ -427,6 +404,40 @@ export default function Dashboard() {
 
   return () => clearInterval(interval);
 }, []);
+
+  useEffect(() => {
+    let ignore = false;
+
+    const loadAttackTypes = async () => {
+      setAttackTypeLoading(true);
+      setAttackTypeError("");
+
+      try {
+        const attackTypes = await fetchAttackTypes(attackTypePeriod);
+
+        if (!ignore) {
+          setPieData(attackTypes);
+        }
+      } catch (err) {
+        console.error("Attack types API error:", err);
+
+        if (!ignore) {
+          setAttackTypeError("공격 유형 데이터를 불러오지 못했습니다.");
+          setPieData([]);
+        }
+      } finally {
+        if (!ignore) {
+          setAttackTypeLoading(false);
+        }
+      }
+    };
+
+    loadAttackTypes();
+
+    return () => {
+      ignore = true;
+    };
+  }, [attackTypePeriod]);
 
   useEffect(() => {
     setAlertPage((page) => Math.min(page, alertPageCount));
@@ -497,60 +508,102 @@ export default function Dashboard() {
       {/* PIE */}
       <div className="bg-[#33445d] rounded-2xl p-5">
         <div className="mb-3 flex items-center justify-between gap-3">
-          <p className="text-gray-300 text-sm">공격 유형</p>
+          <div>
+            <p className="text-gray-300 text-sm">공격 유형 비율</p>
+            <p className="mt-1 text-xs text-gray-400">
+              {attackTypePeriod === "all" ? "전체 기간" : "최근 7일"} · 총{" "}
+              {attackTotal.toLocaleString()}건
+            </p>
+          </div>
           <div className="flex rounded-lg bg-[#2f3b4c] p-1 text-xs">
             <button
               type="button"
-              onClick={() => setPieMode("all")}
+              onClick={() => setAttackTypePeriod("all")}
               className={`rounded-md px-3 py-1 transition ${
-                pieMode === "all" ? "bg-blue-500 text-white" : "text-gray-300"
+                attackTypePeriod === "all"
+                  ? "bg-blue-500 text-white"
+                  : "text-gray-300 hover:text-white"
               }`}
             >
               전체
             </button>
             <button
               type="button"
-              onClick={() => setPieMode("today")}
+              onClick={() => setAttackTypePeriod("week")}
               className={`rounded-md px-3 py-1 transition ${
-                pieMode === "today" ? "bg-blue-500 text-white" : "text-gray-300"
+                attackTypePeriod === "week"
+                  ? "bg-blue-500 text-white"
+                  : "text-gray-300 hover:text-white"
               }`}
             >
-              오늘
+              주간
             </button>
           </div>
         </div>
 
-        <ResponsiveContainer width="100%" height={220}>
-          <PieChart>
-            <Pie
-              data={chartData}
-              dataKey="value"
-              outerRadius={90}
-              innerRadius={0}
-              stroke="#fff"
-              strokeWidth={2}
-              label={renderPieLabel}
-              labelLine={false}
-              isAnimationActive={false}
-            >
-              {chartData.map((item) => (
-                <Cell
-                  key={item.name}
-                  fill={getAttackTypeColor(item.name)}
+        <div className="relative min-h-[220px]">
+          {attackTypeLoading && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-[#33445d]/80 text-sm text-gray-200">
+              데이터를 불러오는 중...
+            </div>
+          )}
+
+          {attackTypeError ? (
+            <div className="flex h-[220px] items-center justify-center rounded-xl border border-red-400/40 bg-red-500/10 px-4 text-center text-sm text-red-200">
+              {attackTypeError}
+            </div>
+          ) : attackTotal === 0 && !attackTypeLoading ? (
+            <div className="flex h-[220px] items-center justify-center rounded-xl border border-[#52637a] bg-[#2f3b4c] px-4 text-center text-sm text-gray-300">
+              표시할 공격 유형 데이터가 없습니다.
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <PieChart>
+                <Pie
+                  data={chartData}
+                  dataKey="value"
+                  nameKey="name"
+                  outerRadius={90}
+                  innerRadius={42}
+                  paddingAngle={2}
+                  stroke="#1f2937"
+                  strokeWidth={2}
+                  label={renderPieLabel}
+                  labelLine={false}
+                  isAnimationActive
+                >
+                  {chartData.map((item) => (
+                    <Cell
+                      key={item.name}
+                      fill={getAttackTypeColor(item.name)}
+                    />
+                  ))}
+                </Pie>
+                <Tooltip
+                  formatter={(value: unknown, name: unknown) => [
+                    `${Number(value).toLocaleString()}건`,
+                    String(name),
+                  ]}
+                  contentStyle={{
+                    background: "#1f2937",
+                    border: "1px solid #52637a",
+                    borderRadius: 8,
+                    color: "#f8fafc",
+                  }}
                 />
-              ))}
-            </Pie>
-          </PieChart>
-        </ResponsiveContainer>
+              </PieChart>
+            </ResponsiveContainer>
+          )}
+        </div>
 
         <div className="flex flex-wrap justify-between gap-x-4 gap-y-2 text-sm mt-2">
-          {ATTACK_TYPE_LABELS.map((label) => (
+          {chartData.map((item) => (
             <span
-              key={label}
+              key={item.name}
               className="whitespace-nowrap"
-              style={{ color: getAttackTypeColor(label) }}
+              style={{ color: getAttackTypeColor(item.name) }}
             >
-              {label}
+              {item.name} ({item.value.toLocaleString()})
             </span>
           ))}
         </div>

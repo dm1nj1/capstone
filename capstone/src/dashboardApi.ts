@@ -12,6 +12,8 @@ export interface ChartItem {
   value: number;
 }
 
+export type AttackTypePeriod = "all" | "week";
+
 export interface TimelineItem {
   t: string;
   v: number;
@@ -235,13 +237,21 @@ export async function fetchSummary(): Promise<SummaryData | null> {
   };
 }
 
-export async function fetchAttackTypes(): Promise<ChartItem[]> {
-  const json: any[] | null = await request("/api/dashboard/attack-types");
-  if (!json) return [];
+export async function fetchAttackTypes(
+  period: AttackTypePeriod = "all"
+): Promise<ChartItem[]> {
+  const params = new URLSearchParams({ period });
+  const res = await fetch(`${API_BASE}/api/dashboard/attack-types?${params}`);
+
+  if (!res.ok) {
+    throw new Error(`Attack types API Error: ${res.status}`);
+  }
+
+  const json: any[] = await res.json();
 
   return json.map((item) => ({
-    name: item.type,
-    value: item.count,
+    name: item.attackType ?? item.type ?? "-",
+    value: Number(item.count ?? 0),
   }));
 }
 
