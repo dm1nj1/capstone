@@ -42,7 +42,7 @@ const DEFAULT_SUMMARY: SummaryData = {
 };
 const ALERTS_PER_PAGE = 5;
 const REFRESH_INTERVAL_MS = 5000;
-const MAIN_CHART_HEIGHT = 420;
+const MAIN_CHART_HEIGHT = 360;
 const ATTACK_TYPE_COLORS: Record<string, string> = {
   "brute force": "#fb923c",
   "port scan": "#60a5fa",
@@ -124,8 +124,8 @@ function buildOrderedAttackData(items: ChartItem[]) {
 }
 
 function buildTodayAttackData(rows: TrafficItem[]) {
-  const today = new Date();
   const counts = new Map<string, number>();
+  const today = new Date();
 
   rows.forEach((row) => {
     const date = getTrafficDate(row);
@@ -467,33 +467,17 @@ export default function Dashboard() {
               {attackTotal.toLocaleString()}건
             </p>
           </div>
-          <div className="flex rounded-lg bg-[#2f3b4c] p-1 text-xs">
-            <button
-              type="button"
-              onClick={() => setAttackChartMode("all")}
-              className={`rounded-md px-3 py-1 transition ${
-                attackChartMode === "all"
-                  ? "bg-blue-500 text-white"
-                  : "text-gray-300 hover:text-white"
-              }`}
-            >
-              전체공격수
-            </button>
-            <button
-              type="button"
-              onClick={() => setAttackChartMode("today")}
-              className={`rounded-md px-3 py-1 transition ${
-                attackChartMode === "today"
-                  ? "bg-blue-500 text-white"
-                  : "text-gray-300 hover:text-white"
-              }`}
-            >
-              오늘 공격
-            </button>
-          </div>
+          <ToggleGroup
+            value={attackChartMode}
+            options={[
+              { label: "전체공격수", value: "all" },
+              { label: "오늘 공격", value: "today" },
+            ]}
+            onChange={setAttackChartMode}
+          />
         </div>
 
-        <div className="relative min-h-[420px] flex-1">
+        <div className="relative flex flex-1 flex-col justify-center min-h-[360px]">
           {attackChartMode === "all" && attackTypeLoading && (
             <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-[#33445d]/80 text-sm text-gray-200">
               데이터를 불러오는 중...
@@ -501,22 +485,22 @@ export default function Dashboard() {
           )}
 
           {attackChartMode === "all" && attackTypeError ? (
-            <div className="flex h-full min-h-[420px] items-center justify-center rounded-xl border border-red-400/40 bg-red-500/10 px-4 text-center text-sm text-red-200">
+            <div className="flex h-full min-h-[360px] items-center justify-center rounded-xl border border-red-400/40 bg-red-500/10 px-4 text-center text-sm text-red-200">
               {attackTypeError}
             </div>
           ) : attackTotal === 0 &&
             !(attackChartMode === "all" && attackTypeLoading) ? (
-            <div className="flex h-full min-h-[420px] items-center justify-center rounded-xl border border-[#52637a] bg-[#2f3b4c] px-4 text-center text-sm text-gray-300">
+            <div className="flex h-full min-h-[360px] items-center justify-center rounded-xl border border-[#52637a] bg-[#2f3b4c] px-4 text-center text-sm text-gray-300">
               표시할 공격 유형 데이터가 없습니다.
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height={MAIN_CHART_HEIGHT}>
+            <ResponsiveContainer width="100%" height={420}>
               <PieChart>
                 <Pie
                   data={chartData}
                   dataKey="value"
                   nameKey="name"
-                  outerRadius={155}
+                  outerRadius={170}
                   innerRadius={0}
                   paddingAngle={0}
                   stroke="#1f2937"
@@ -566,9 +550,12 @@ export default function Dashboard() {
       <div className="flex h-full flex-col bg-[#33445d] rounded-2xl p-5">
         <p className="text-gray-300 text-sm mb-3">최근 7일간 공격</p>
 
-        <div className="min-h-[420px] flex-1">
-          <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={weeklyAttackData}>
+        <div className="relative flex flex-1 flex-col justify-center min-h-[360px]">
+          <div className="w-full flex-none">
+          <ResponsiveContainer width="100%" height={320}>
+          <LineChart data={weeklyAttackData}
+                     margin={{ top: 10, right: 15, left: -20, bottom: 5}}
+          >
             <CartesianGrid stroke="#52637a" strokeDasharray="3 3" />
             <XAxis dataKey="t" stroke="#cbd5e1" />
             <YAxis stroke="#cbd5e1" />
@@ -582,6 +569,7 @@ export default function Dashboard() {
           </LineChart>
           </ResponsiveContainer>
         </div>
+      </div>
       </div>
     </div>
   </Panel>
@@ -766,6 +754,35 @@ function Panel({ title, children }: PanelProps) {
     >
       <h2 className="text-2xl font-semibold mb-5">{title}</h2>
       {children}
+    </div>
+  );
+}
+
+function ToggleGroup<T extends string>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T;
+  options: Array<{ label: string; value: T }>;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="flex rounded-lg bg-[#2f3b4c] p-1 text-xs">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          onClick={() => onChange(option.value)}
+          className={`rounded-md px-3 py-1 transition ${
+            value === option.value
+              ? "bg-blue-500 text-white"
+              : "text-gray-300 hover:text-white"
+          }`}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }
