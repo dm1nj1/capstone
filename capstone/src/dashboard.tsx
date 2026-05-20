@@ -3,8 +3,6 @@ import {
   Flame,
   AlertTriangle,
   Activity,
-  Search,
-  ChevronDown,
   X,
 } from "lucide-react";
 
@@ -28,7 +26,6 @@ import {
   fetchAlerts,
   fetchTraffic,
   fetchTrafficDetail,
-  type AttackTypePeriod,
   type AlertItem,
   type ChartItem,
   type SummaryData,
@@ -44,7 +41,8 @@ const DEFAULT_SUMMARY: SummaryData = {
   averageRisk: 0,
 };
 const ALERTS_PER_PAGE = 5;
-const TRAFFIC_PER_PAGE = 10;
+const REFRESH_INTERVAL_MS = 5000;
+const MAIN_CHART_HEIGHT = 420;
 const ATTACK_TYPE_COLORS: Record<string, string> = {
   "brute force": "#fb923c",
   "port scan": "#60a5fa",
@@ -60,6 +58,8 @@ const ATTACK_TYPE_LABELS = [
   "SYN Flood",
 ];
 const DEFAULT_ATTACK_COLOR = "#60a5fa";
+
+type AttackChartMode = "all" | "today";
 
 function normalizeAttackType(name: string) {
   const normalized = name.trim().toLowerCase().replace(/[_-]/g, " ");
@@ -107,24 +107,6 @@ function formatMonthDay(date: Date) {
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
-function getTrafficDateKey(row: TrafficItem) {
-  const date = getTrafficDate(row);
-
-  if (!date) return row.startTime && row.startTime !== "-" ? row.startTime : "-";
-
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-
-  return `${year}-${month}-${day}`;
-}
-
-function uniqueSorted(values: Array<string | number>) {
-  return Array.from(new Set(values.map((value) => String(value))))
-    .filter((value) => value && value !== "-")
-    .sort((a, b) => a.localeCompare(b));
-}
-
 function buildOrderedAttackData(items: ChartItem[]) {
   const counts = new Map<string, number>();
 
@@ -139,6 +121,26 @@ function buildOrderedAttackData(items: ChartItem[]) {
   }));
 
   return orderedItems.some((item) => item.value > 0) ? orderedItems : items;
+}
+
+function buildTodayAttackData(rows: TrafficItem[]) {
+  const today = new Date();
+  const counts = new Map<string, number>();
+
+  rows.forEach((row) => {
+    const date = getTrafficDate(row);
+
+    if (!date || !isSameLocalDay(date, today)) return;
+
+    const name = row.attackType || row.result || "-";
+    const key = normalizeAttackType(name);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  });
+
+  return ATTACK_TYPE_LABELS.map((label) => ({
+    name: label,
+    value: counts.get(normalizeAttackType(label)) ?? 0,
+  }));
 }
 
 function buildLastSevenDaysData(rows: TrafficItem[]) {
@@ -240,14 +242,9 @@ export default function Dashboard() {
   const [flows, setFlows] = useState<AlertItem[]>([]);
   const [traffic, setTraffic] = useState<TrafficItem[]>([]);
   const [alertPage, setAlertPage] = useState(1);
-  const [trafficPage, setTrafficPage] = useState(1);
   const [alertSearch, setAlertSearch] = useState("");
-  const [trafficSearch, setTrafficSearch] = useState("");
-  const [sourceIpFilter, setSourceIpFilter] = useState("");
-  const [dateFilter, setDateFilter] = useState("");
-  const [portFilter, setPortFilter] = useState("");
-  const [attackTypePeriod, setAttackTypePeriod] =
-    useState<AttackTypePeriod>("all");
+  const [attackChartMode, setAttackChartMode] =
+    useState<AttackChartMode>("all");
   const [attackTypeLoading, setAttackTypeLoading] = useState(false);
   const [attackTypeError, setAttackTypeError] = useState("");
   const [selectedTraffic, setSelectedTraffic] = useState<TrafficDetail | null>(
@@ -255,17 +252,22 @@ export default function Dashboard() {
   );
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [detailError, setDetailError] = useState("");
-  const currentAttackType =
-    pieData.reduce<ChartItem | null>(
-      (top, item) => (!top || item.value > top.value ? item : top),
-      null
-    )?.name ?? "SSH Brute Force";
   const allAttackChartData = useMemo(
     () => buildOrderedAttackData(pieData),
     [pieData]
   );
-  const chartData = allAttackChartData;
+  const todayAttackChartData = useMemo(
+    () => buildTodayAttackData(traffic),
+    [traffic]
+  );
+  const chartData =
+    attackChartMode === "today" ? todayAttackChartData : allAttackChartData;
   const attackTotal = chartData.reduce((total, item) => total + item.value, 0);
+  const currentAttackType =
+    chartData.reduce<ChartItem | null>(
+      (top, item) => (!top || item.value > top.value ? item : top),
+      null
+    )?.name ?? "SSH Brute Force";
   const weeklyAttackData = useMemo(
     () => buildLastSevenDaysData(traffic),
     [traffic]
@@ -295,47 +297,6 @@ export default function Dashboard() {
       ),
     [alertSearch, flows]
   );
-  const filteredTraffic = useMemo(
-    () =>
-      traffic.filter((row) => {
-        const matchesSource = !sourceIpFilter || row.srcIp === sourceIpFilter;
-        const matchesDate = !dateFilter || getTrafficDateKey(row) === dateFilter;
-        const matchesPort = !portFilter || String(row.port) === portFilter;
-
-        return (
-          matchesSource &&
-          matchesDate &&
-          matchesPort &&
-          matchesSearch(
-            [
-              row.flowId,
-              row.time,
-              row.srcIp,
-              row.dstIp,
-              row.port,
-              row.protocol,
-              row.flag,
-              row.result,
-              row.attackType,
-            ],
-            trafficSearch
-          )
-        );
-      }),
-    [dateFilter, portFilter, sourceIpFilter, traffic, trafficSearch]
-  );
-  const sourceIpOptions = useMemo(
-    () => uniqueSorted(traffic.map((row) => row.srcIp)),
-    [traffic]
-  );
-  const dateOptions = useMemo(
-    () => uniqueSorted(traffic.map((row) => getTrafficDateKey(row))),
-    [traffic]
-  );
-  const portOptions = useMemo(
-    () => uniqueSorted(traffic.map((row) => row.port)),
-    [traffic]
-  );
   const alertPageCount = Math.max(
     1,
     Math.ceil(filteredFlows.length / ALERTS_PER_PAGE)
@@ -343,14 +304,6 @@ export default function Dashboard() {
   const pagedFlows = filteredFlows.slice(
     (alertPage - 1) * ALERTS_PER_PAGE,
     alertPage * ALERTS_PER_PAGE
-  );
-  const trafficPageCount = Math.max(
-    1,
-    Math.ceil(filteredTraffic.length / TRAFFIC_PER_PAGE)
-  );
-  const pagedTraffic = filteredTraffic.slice(
-    (trafficPage - 1) * TRAFFIC_PER_PAGE,
-    trafficPage * TRAFFIC_PER_PAGE
   );
 
   const openTrafficDetail = async (flowId: string) => {
@@ -400,7 +353,7 @@ export default function Dashboard() {
   };
 
   load();
-  const interval = setInterval(load, 5000);
+  const interval = setInterval(load, REFRESH_INTERVAL_MS);
 
   return () => clearInterval(interval);
 }, []);
@@ -408,12 +361,14 @@ export default function Dashboard() {
   useEffect(() => {
     let ignore = false;
 
-    const loadAttackTypes = async () => {
-      setAttackTypeLoading(true);
+    const loadAttackTypes = async (showLoading = true) => {
+      if (showLoading) {
+        setAttackTypeLoading(true);
+      }
       setAttackTypeError("");
 
       try {
-        const attackTypes = await fetchAttackTypes(attackTypePeriod);
+        const attackTypes = await fetchAttackTypes("all");
 
         if (!ignore) {
           setPieData(attackTypes);
@@ -433,27 +388,24 @@ export default function Dashboard() {
     };
 
     loadAttackTypes();
+    const interval = setInterval(
+      () => loadAttackTypes(false),
+      REFRESH_INTERVAL_MS
+    );
 
     return () => {
       ignore = true;
+      clearInterval(interval);
     };
-  }, [attackTypePeriod]);
+  }, []);
 
   useEffect(() => {
     setAlertPage((page) => Math.min(page, alertPageCount));
   }, [alertPageCount]);
 
   useEffect(() => {
-    setTrafficPage((page) => Math.min(page, trafficPageCount));
-  }, [trafficPageCount]);
-
-  useEffect(() => {
     setAlertPage(1);
   }, [alertSearch]);
-
-  useEffect(() => {
-    setTrafficPage(1);
-  }, [dateFilter, portFilter, sourceIpFilter, trafficSearch]);
 
   return (
     <div className="min-h-screen bg-[#edf1f7] p-6" style={{ fontFamily: "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif", }}>
@@ -500,77 +452,78 @@ export default function Dashboard() {
       </div>
 
       {/* CENTER */}
-<div className="grid grid-cols-2 gap-6 mb-8">
+<div className="grid grid-cols-2 items-stretch gap-6 mb-8">
 
   {/* LEFT PANEL */}
   <Panel title="실시간 공격 상태">
-    <div className="grid grid-cols-2 gap-4">
+    <div className="grid h-full flex-1 grid-cols-2 gap-4">
       {/* PIE */}
-      <div className="bg-[#33445d] rounded-2xl p-5">
+      <div className="flex h-full flex-col bg-[#33445d] rounded-2xl p-5">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div>
             <p className="text-gray-300 text-sm">공격 유형 비율</p>
             <p className="mt-1 text-xs text-gray-400">
-              {attackTypePeriod === "all" ? "전체 기간" : "최근 7일"} · 총{" "}
+              {attackChartMode === "all" ? "전체공격수" : "오늘 공격"} · 총{" "}
               {attackTotal.toLocaleString()}건
             </p>
           </div>
           <div className="flex rounded-lg bg-[#2f3b4c] p-1 text-xs">
             <button
               type="button"
-              onClick={() => setAttackTypePeriod("all")}
+              onClick={() => setAttackChartMode("all")}
               className={`rounded-md px-3 py-1 transition ${
-                attackTypePeriod === "all"
+                attackChartMode === "all"
                   ? "bg-blue-500 text-white"
                   : "text-gray-300 hover:text-white"
               }`}
             >
-              전체
+              전체공격수
             </button>
             <button
               type="button"
-              onClick={() => setAttackTypePeriod("week")}
+              onClick={() => setAttackChartMode("today")}
               className={`rounded-md px-3 py-1 transition ${
-                attackTypePeriod === "week"
+                attackChartMode === "today"
                   ? "bg-blue-500 text-white"
                   : "text-gray-300 hover:text-white"
               }`}
             >
-              주간
+              오늘 공격
             </button>
           </div>
         </div>
 
-        <div className="relative min-h-[220px]">
-          {attackTypeLoading && (
+        <div className="relative min-h-[420px] flex-1">
+          {attackChartMode === "all" && attackTypeLoading && (
             <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-[#33445d]/80 text-sm text-gray-200">
               데이터를 불러오는 중...
             </div>
           )}
 
-          {attackTypeError ? (
-            <div className="flex h-[220px] items-center justify-center rounded-xl border border-red-400/40 bg-red-500/10 px-4 text-center text-sm text-red-200">
+          {attackChartMode === "all" && attackTypeError ? (
+            <div className="flex h-full min-h-[420px] items-center justify-center rounded-xl border border-red-400/40 bg-red-500/10 px-4 text-center text-sm text-red-200">
               {attackTypeError}
             </div>
-          ) : attackTotal === 0 && !attackTypeLoading ? (
-            <div className="flex h-[220px] items-center justify-center rounded-xl border border-[#52637a] bg-[#2f3b4c] px-4 text-center text-sm text-gray-300">
+          ) : attackTotal === 0 &&
+            !(attackChartMode === "all" && attackTypeLoading) ? (
+            <div className="flex h-full min-h-[420px] items-center justify-center rounded-xl border border-[#52637a] bg-[#2f3b4c] px-4 text-center text-sm text-gray-300">
               표시할 공격 유형 데이터가 없습니다.
             </div>
           ) : (
-            <ResponsiveContainer width="100%" height={220}>
+            <ResponsiveContainer width="100%" height={MAIN_CHART_HEIGHT}>
               <PieChart>
                 <Pie
                   data={chartData}
                   dataKey="value"
                   nameKey="name"
-                  outerRadius={90}
-                  innerRadius={42}
-                  paddingAngle={2}
+                  outerRadius={155}
+                  innerRadius={0}
+                  paddingAngle={0}
                   stroke="#1f2937"
-                  strokeWidth={2}
+                  strokeWidth={1}
                   label={renderPieLabel}
                   labelLine={false}
-                  isAnimationActive
+                  isAnimationActive={false}
                 >
                   {chartData.map((item) => (
                     <Cell
@@ -610,10 +563,11 @@ export default function Dashboard() {
       </div>
 
       {/* LINE */}
-      <div className="bg-[#33445d] rounded-2xl p-5">
+      <div className="flex h-full flex-col bg-[#33445d] rounded-2xl p-5">
         <p className="text-gray-300 text-sm mb-3">최근 7일간 공격</p>
 
-        <ResponsiveContainer width="100%" height={220}>
+        <div className="min-h-[420px] flex-1">
+          <ResponsiveContainer width="100%" height="100%">
           <LineChart data={weeklyAttackData}>
             <CartesianGrid stroke="#52637a" strokeDasharray="3 3" />
             <XAxis dataKey="t" stroke="#cbd5e1" />
@@ -626,7 +580,8 @@ export default function Dashboard() {
               dot={{ r: 4 }}
             />
           </LineChart>
-        </ResponsiveContainer>
+          </ResponsiveContainer>
+        </div>
       </div>
     </div>
   </Panel>
@@ -668,6 +623,7 @@ export default function Dashboard() {
             <Th>Prediction</Th>
             <Th>Action</Th>
             <Th>RiskScore</Th>
+            <Th>Details</Th>
           </tr>
         </thead>
         <tbody>
@@ -682,11 +638,23 @@ export default function Dashboard() {
               <Td className="text-red-300">{item.prediction}</Td>
               <Td>{item.action}</Td>
               <Td>{item.riskScore}</Td>
+              <Td>
+                <button
+                  type="button"
+                  onClick={() => openTrafficDetail(item.flowId)}
+                  disabled={detailLoadingId === item.flowId}
+                  className="text-blue-300 transition hover:text-blue-200 disabled:cursor-wait disabled:opacity-60"
+                >
+                  {detailLoadingId === item.flowId
+                    ? "Loading..."
+                    : "View Details"}
+                </button>
+              </Td>
             </tr>
           ))}
           {pagedFlows.length === 0 && (
             <tr className="border-t border-[#41506a]">
-              <Td className="text-center text-gray-300" colSpan={6}>
+              <Td className="text-center text-gray-300" colSpan={7}>
                 검색 결과가 없습니다.
               </Td>
             </tr>
@@ -740,151 +708,6 @@ export default function Dashboard() {
   </Panel>
 </div>
 
-      {/* BOTTOM TABLE */}
-      <Panel title="상세 트래픽 분석">
-        <p className="text-gray-400 text-sm mb-4">
-          네트워크 트래픽 목록 (검색 및 페이징)
-        </p>
-
-        {/* SEARCH */}
-        <div className="bg-[#33445d] rounded-xl p-3 flex gap-3 mb-5">
-          <div className="flex-1 flex items-center bg-[#2f3b4c] rounded-lg px-3">
-            <Search size={16} className="text-gray-400 mr-2" />
-            <input
-              placeholder="Search"
-              className="bg-transparent w-full py-2 outline-none text-sm"
-              value={trafficSearch}
-              onChange={(event) => setTrafficSearch(event.target.value)}
-            />
-          </div>
-
-          <FilterSelect
-            label="Source IP"
-            value={sourceIpFilter}
-            options={sourceIpOptions}
-            onChange={setSourceIpFilter}
-          />
-          <FilterSelect
-            label="Date Range"
-            value={dateFilter}
-            options={dateOptions}
-            onChange={setDateFilter}
-          />
-          <FilterSelect
-            label="Port"
-            value={portFilter}
-            options={portOptions}
-            onChange={setPortFilter}
-          />
-        </div>
-
-        {/* TABLE */}
-        <div className="overflow-hidden rounded-xl border border-[#41506a]">
-          <table className="w-full text-sm">
-            <thead className="bg-[#3b4b61] text-left">
-              <tr>
-                <Th>FlowID</Th>
-                <Th>Timestamp</Th>
-                <Th>Source IP</Th>
-                <Th>Destination IP</Th>
-                <Th>Port</Th>
-                <Th>Protocol</Th>
-                <Th>AI Result</Th>
-                <Th>Actions</Th>
-              </tr>
-            </thead>
-
-            <tbody>
-              {pagedTraffic.map((row, i) => (
-                <tr
-                  key={`${row.flowId}-${i}`}
-                  className="border-t border-[#41506a] hover:bg-[#34455b]"
-                >
-                  <Td>{row.flowId}</Td>
-                  <Td>{row.time}</Td>
-                  <Td>{row.srcIp}</Td>
-                  <Td>{row.dstIp}</Td>
-                  <Td>{row.port}</Td>
-                  <Td>{row.protocol}</Td>
-
-                  <Td
-                    className={
-                      row.result.includes("High")
-                        ? "text-red-400"
-                        : "text-yellow-400"
-                    }
-                  >
-                    {row.result}
-                  </Td>
-
-                  <Td>
-                    <button
-                      type="button"
-                      onClick={() => openTrafficDetail(row.flowId)}
-                      disabled={detailLoadingId === row.flowId}
-                      className="text-blue-400 hover:text-blue-300 disabled:cursor-wait disabled:opacity-60"
-                    >
-                      {detailLoadingId === row.flowId
-                        ? "Loading..."
-                        : "[View Details]"}
-                    </button>
-                  </Td>
-                </tr>
-              ))}
-              {pagedTraffic.length === 0 && (
-                <tr className="border-t border-[#41506a]">
-                  <Td className="text-center text-gray-300" colSpan={8}>
-                    검색 결과가 없습니다.
-                  </Td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {/* PAGING */}
-        <div className="flex justify-center items-center gap-4 mt-5">
-          <button
-            type="button"
-            onClick={() => setTrafficPage((page) => Math.max(1, page - 1))}
-            disabled={trafficPage === 1}
-            className="bg-[#4a5568] px-4 py-2 rounded disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Previous
-          </button>
-
-          <div className="flex items-center gap-2">
-            {Array.from({ length: trafficPageCount }, (_, i) => i + 1).map(
-              (page) => (
-                <button
-                  key={page}
-                  type="button"
-                  onClick={() => setTrafficPage(page)}
-                  className={`h-8 min-w-8 rounded px-2 transition ${
-                    trafficPage === page
-                      ? "bg-blue-500 text-white"
-                      : "hover:bg-[#33445d]"
-                  }`}
-                >
-                  {page}
-                </button>
-              )
-            )}
-          </div>
-
-          <button
-            type="button"
-            onClick={() =>
-              setTrafficPage((page) => Math.min(trafficPageCount, page + 1))
-            }
-            disabled={trafficPage === trafficPageCount}
-            className="bg-blue-500 px-4 py-2 rounded disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Next
-          </button>
-        </div>
-      </Panel>
-
       {detailError && (
         <div className="fixed bottom-6 right-6 rounded-lg bg-red-500 px-4 py-3 text-sm font-semibold text-white shadow-lg">
           {detailError}
@@ -935,7 +758,7 @@ interface PanelProps {
 function Panel({ title, children }: PanelProps) {
   return (
     <div 
-      className="bg-gradient-to-r from-[#2e3c52] to-[#34445c] text-white rounded-2xl shadow-lg p-6"
+      className="flex h-full flex-col bg-gradient-to-r from-[#2e3c52] to-[#34445c] text-white rounded-2xl shadow-lg p-6"
       style={{
         fontFamily:
           "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif",
@@ -943,39 +766,6 @@ function Panel({ title, children }: PanelProps) {
     >
       <h2 className="text-2xl font-semibold mb-5">{title}</h2>
       {children}
-    </div>
-  );
-}
-
-function FilterSelect({
-  label,
-  value,
-  options,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  options: string[];
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div className="relative min-w-[130px]">
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-full w-full appearance-none rounded-lg bg-[#2f3b4c] px-4 py-2 pr-9 text-sm outline-none"
-      >
-        <option value="">{label}</option>
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-      <ChevronDown
-        size={16}
-        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-gray-300"
-      />
     </div>
   );
 }
@@ -990,18 +780,18 @@ function DetailModal({
   const aiResult = detail.aiResult;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-6">
-      <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-2xl bg-[#2e3c52] text-white shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-3">
+      <div className="max-h-[96vh] w-full max-w-7xl overflow-y-auto rounded-2xl bg-[#2e3c52] text-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-[#41506a] px-6 py-4">
           <div>
-            <h3 className="text-xl font-bold">트래픽 상세 정보</h3>
+            <h3 className="text-xl font-bold">Traffic Detail</h3>
             <p className="mt-1 text-sm text-gray-300">FlowID {detail.flowId}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             className="rounded-full p-2 text-gray-300 transition hover:bg-[#33445d] hover:text-white"
-            aria-label="상세 정보 닫기"
+            aria-label="Close detail"
           >
             <X size={20} />
           </button>
@@ -1009,7 +799,7 @@ function DetailModal({
 
         <div className="grid gap-5 p-6 md:grid-cols-2">
           <div className="rounded-xl bg-[#33445d] p-5">
-            <h4 className="mb-4 font-semibold">Flow 정보</h4>
+            <h4 className="mb-4 font-semibold">Flow Info</h4>
             <div className="space-y-3 text-sm">
               <DetailRow label="Source IP" value={detail.srcIp} />
               <DetailRow label="Source Port" value={detail.srcPort} />
@@ -1023,7 +813,7 @@ function DetailModal({
           </div>
 
           <div className="rounded-xl bg-[#33445d] p-5">
-            <h4 className="mb-4 font-semibold">AI 분석 결과</h4>
+            <h4 className="mb-4 font-semibold">AI Analysis</h4>
             {aiResult ? (
               <div className="space-y-3 text-sm">
                 <DetailRow label="Model" value={aiResult.modelName} />
@@ -1035,7 +825,7 @@ function DetailModal({
                 <DetailRow label="Analyzed At" value={aiResult.analyzedAt} />
               </div>
             ) : (
-              <p className="text-sm text-gray-300">AI 분석 결과가 없습니다.</p>
+              <p className="text-sm text-gray-300">No AI analysis data.</p>
             )}
           </div>
         </div>
