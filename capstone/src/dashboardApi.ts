@@ -461,3 +461,7 @@ export async function getAIResult(flowId: number): Promise<AIResult | null> {
     percent: `${(result.confidence * 100).toFixed(1)}%`,
   };
 }
+
+export async function fetchRealtimeTimeline(): Promise<TimelineItem[]> {
+  return fetchTimeline();
+}

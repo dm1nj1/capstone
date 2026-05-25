@@ -23,9 +23,9 @@ import {
   fetchSummary,
   fetchAttackTypes,
   fetchTimeline,
-  fetchAlerts,
   fetchTraffic,
   fetchTrafficDetail,
+  fetchAlerts,
   type AlertItem,
   type ChartItem,
   type SummaryData,
@@ -42,7 +42,6 @@ const DEFAULT_SUMMARY: SummaryData = {
 };
 const ALERTS_PER_PAGE = 5;
 const REFRESH_INTERVAL_MS = 5000;
-const MAIN_CHART_HEIGHT = 360;
 const ATTACK_TYPE_COLORS: Record<string, string> = {
   "brute force": "#fb923c",
   "port scan": "#60a5fa",
@@ -103,8 +102,69 @@ function isSameLocalDay(a: Date, b: Date) {
   );
 }
 
+function getLatestTrafficDate(rows: TrafficItem[]) {
+  return (
+    rows
+      .map(getTrafficDate)
+      .filter((date): date is Date => date !== null)
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null
+  );
+}
+
 function formatMonthDay(date: Date) {
   return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function buildRecentDailyData(rows: TrafficItem[], fallback: TimelineItem[]) {
+  const latestDate = getLatestTrafficDate(rows);
+
+  if (!latestDate) {
+    return fallback.filter((item) => item.t && item.t !== "undefined");
+  }
+
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(latestDate);
+    date.setHours(0, 0, 0, 0);
+    date.setDate(latestDate.getDate() - (6 - index));
+
+    return date;
+  });
+
+  return days.map((day) => ({
+    t: formatMonthDay(day),
+    v: rows.filter((row) => {
+      const date = getTrafficDate(row);
+
+      return date !== null && isSameLocalDay(date, day);
+    }).length,
+  }));
+}
+
+function buildRecentHourlyData(rows: TrafficItem[], fallback: TimelineItem[]) {
+  const latestDate = getLatestTrafficDate(rows);
+  const now = latestDate ?? new Date();
+  const hours = Array.from({ length: 24 }, (_, index) => {
+    const date = new Date(now);
+    date.setMinutes(0, 0, 0);
+    date.setHours(now.getHours() - (23 - index));
+
+    return date;
+  });
+
+  const hourly = hours.map((hour) => {
+    const nextHour = new Date(hour.getTime() + 60 * 60 * 1000);
+
+    return {
+      t: `${hour.getHours()}시`,
+      v: rows.filter((row) => {
+        const date = getTrafficDate(row);
+
+        return date !== null && date >= hour && date < nextHour;
+      }).length,
+    };
+  });
+
+  return hourly.some((item) => item.v > 0) ? hourly : fallback;
 }
 
 function buildOrderedAttackData(items: ChartItem[]) {
@@ -142,52 +202,6 @@ function buildTodayAttackData(rows: TrafficItem[]) {
     value: counts.get(normalizeAttackType(label)) ?? 0,
   }));
 }
-
-function buildLastSevenDaysData(rows: TrafficItem[]) {
-  const today = new Date();
-  const days = Array.from({ length: 7 }, (_, index) => {
-    const date = new Date(today);
-    date.setHours(0, 0, 0, 0);
-    date.setDate(today.getDate() - (6 - index));
-
-    return date;
-  });
-
-  return days.map((day) => ({
-    t: formatMonthDay(day),
-    v: rows.filter((row) => {
-      const date = getTrafficDate(row);
-      return date ? isSameLocalDay(date, day) : false;
-    }).length,
-  }));
-}
-
-function buildLastTwentyFourHoursData(rows: TrafficItem[], fallback: TimelineItem[]) {
-  const now = new Date();
-  const hours = Array.from({ length: 24 }, (_, index) => {
-    const date = new Date(now);
-    date.setMinutes(0, 0, 0);
-    date.setHours(now.getHours() - (23 - index));
-
-    return date;
-  });
-
-  const hourly = hours.map((hour) => ({
-    t: `${hour.getHours()}시`,
-    v: rows.filter((row) => {
-      const date = getTrafficDate(row);
-
-      return (
-        date !== null &&
-        date >= hour &&
-        date < new Date(hour.getTime() + 60 * 60 * 1000)
-      );
-    }).length,
-  }));
-
-  return hourly.some((item) => item.v > 0) ? hourly : fallback;
-}
-
 interface PieLabelProps {
   cx?: number;
   cy?: number;
@@ -269,11 +283,11 @@ export default function Dashboard() {
       null
     )?.name ?? "SSH Brute Force";
   const weeklyAttackData = useMemo(
-    () => buildLastSevenDaysData(traffic),
-    [traffic]
+    () => buildRecentDailyData(traffic, lineData),
+    [lineData, traffic]
   );
   const hourlyAttackData = useMemo(
-    () => buildLastTwentyFourHoursData(traffic, lineData),
+    () => buildRecentHourlyData(traffic, lineData),
     [lineData, traffic]
   );
   const filteredFlows = useMemo(
@@ -327,36 +341,35 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-  const load = async () => {
-    try {
-      const [
-        summary,
-        timeline,
-        alerts,
-        trafficData,
-      ] = await Promise.all([
-        fetchSummary(),
-        fetchTimeline(),
-        fetchAlerts(),
-        fetchTraffic(1, 500),
-      ]);
+    const load = async () => {
+      try {
+        const [summary,timeline,alerts,trafficData] = await Promise.all([
+          fetchSummary(),
+          fetchTimeline(),
+          fetchAlerts(),
+          fetchTraffic(1, 500),
+        ]);
 
-      if (summary) {
-        setData(summary);
+        if(summary){
+          setData(summary);
+        }
+
+        setLineData(timeline);
+        setFlows(alerts);
+        setTraffic(trafficData.items);
+
+      } catch (err) {
+        console.error("API error:",err);
       }
-      setLineData(timeline);
-      setFlows(alerts);
-      setTraffic(trafficData.items);
-    } catch (err) {
-      console.error("API error:", err);
-    }
-  };
+    };
 
-  load();
-  const interval = setInterval(load, REFRESH_INTERVAL_MS);
+    load();
 
-  return () => clearInterval(interval);
-}, []);
+    const interval = setInterval(load,REFRESH_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+
+  }, []);
 
   useEffect(() => {
     let ignore = false;
@@ -517,16 +530,18 @@ export default function Dashboard() {
                   ))}
                 </Pie>
                 <Tooltip
-                  formatter={(value: unknown, name: unknown) => [
-                    `${Number(value).toLocaleString()}건`,
-                    String(name),
-                  ]}
-                  contentStyle={{
-                    background: "#1f2937",
-                    border: "1px solid #52637a",
-                    borderRadius: 8,
-                    color: "#f8fafc",
-                  }}
+                    formatter={(value)=>[
+                      `${value}건`,
+                      "공격 수"
+                    ]}
+                />
+
+                <Line
+                    type="linear"
+                    dataKey="v"
+                    stroke="#f5a623"
+                    strokeWidth={3}
+                    dot={{r:4}}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -580,15 +595,38 @@ export default function Dashboard() {
       <p className="text-sm text-gray-300 mb-2">최근 24시간 공격 추이</p>
 
       <ResponsiveContainer width="100%" height={130}>
-        <LineChart data={hourlyAttackData}>
-          <YAxis hide domain={[0, "dataMax"]} />
-          <Line
-            dataKey="v"
-            stroke="#f5a623"
-            strokeWidth={3}
-            dot={false}
-          />
-        </LineChart>
+        <ResponsiveContainer width="100%" height={130}>
+          <LineChart data={hourlyAttackData}>
+
+            <XAxis
+                dataKey="t"
+                stroke="#cbd5e1"
+                interval={2}
+            />
+
+            <YAxis
+                hide
+                domain={[0,"dataMax"]}
+            />
+
+            <Tooltip
+                formatter={(value)=>[
+                  `${value}건`,
+                  "공격 수"
+                ]}
+            />
+
+            <Line
+                type="monotone"
+                dataKey="v"
+                stroke="#f5a623"
+                strokeWidth={3}
+                dot={false}
+                activeDot={{r:5}}
+            />
+
+          </LineChart>
+        </ResponsiveContainer>
       </ResponsiveContainer>
     </div>
 
@@ -652,46 +690,85 @@ export default function Dashboard() {
     </div>
 
     <div className="flex justify-center items-center gap-4 mt-5">
+
       <button
-        type="button"
-        onClick={() => setAlertPage((page) => Math.max(1, page - 1))}
-        disabled={alertPage === 1}
-        className="bg-[#4a5568] px-4 py-2 rounded disabled:opacity-40"
+          onClick={() =>
+              setAlertPage(1)
+          }
+
+          disabled={
+              alertPage===1
+          }
+      >
+        ⏮
+      </button>
+
+      <button
+          type="button"
+
+          onClick={() =>
+              setAlertPage(
+                  page =>
+                      Math.max(
+                          1,
+                          page-1
+                      )
+              )
+          }
+
+          disabled={
+              alertPage===1
+          }
+
+          className="bg-[#4a5568] px-4 py-2 rounded disabled:opacity-40"
       >
         Previous
       </button>
 
-      <div className="flex items-center gap-2">
-        {Array.from({ length: alertPageCount }, (_, i) => i + 1).map(
-          (page) => (
-            <button
-              key={page}
-              type="button"
-              onClick={() => setAlertPage(page)}
-              className={`h-8 min-w-8 rounded px-2 transition ${
-                alertPage === page
-                  ? "bg-blue-500 text-white"
-                  : "hover:bg-[#33445d]"
-              }`}
-            >
-              {page}
-            </button>
-          )
-        )}
-      </div>
+      <span>
+    {alertPage}
+        /
+        {alertPageCount}
+  </span>
 
       <button
-        type="button"
-        onClick={() =>
-          setAlertPage((page) =>
-            Math.min(alertPageCount, page + 1)
-          )
-        }
-        disabled={alertPage === alertPageCount}
-        className="bg-blue-500 px-4 py-2 rounded disabled:opacity-40"
+          type="button"
+
+          onClick={() =>
+              setAlertPage(
+                  page =>
+                      Math.min(
+                          alertPageCount,
+                          page+1
+                      )
+              )
+          }
+
+          disabled={
+              alertPage===
+              alertPageCount
+          }
+
+          className="bg-blue-500 px-4 py-2 rounded disabled:opacity-40"
       >
         Next
       </button>
+
+      <button
+          onClick={() =>
+              setAlertPage(
+                  alertPageCount
+              )
+          }
+
+          disabled={
+              alertPage===
+              alertPageCount
+          }
+      >
+        ⏭
+      </button>
+
     </div>
   </Panel>
 </div>
