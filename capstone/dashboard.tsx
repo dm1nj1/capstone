@@ -473,12 +473,12 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-[#edf1f7] p-6" style={{ fontFamily: "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif", }}>
       {/* HEADER */}
-      <div className="bg-white text-[#111827] px-8 py-5 rounded-2xl shadow-lg flex justify-between items-center mb-8">
+      <div className="bg-[#30425b] text-white px-8 py-5 rounded-2xl shadow-lg flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold tracking-wide">
-          한이음 프로젝트
+          보안 시스템 대시보드
         </h1>
 
-        <p className="text-sm text-gray-600">
+        <p className="text-sm opacity-90">
           현재 {currentAttackType} 공격이 점증 발생 중
         </p>
       </div>
@@ -495,7 +495,7 @@ export default function Dashboard() {
         <Card
           title="오늘 공격 수"
           value={`${data.attackCount}건`}
-          color="bg-blue-500 text-white"
+          color="bg-blue-500"
           icon={<AlertTriangle size={20} />}
         />
 
@@ -521,16 +521,16 @@ export default function Dashboard() {
   <Panel title="실시간 공격 상태">
     <div className="grid h-full flex-1 grid-cols-2 gap-4">
       {/* PIE */}
-      <div className="flex h-full flex-col rounded-2xl border border-gray-200 bg-white p-5 text-[#111827]">
+      <div className="flex h-full flex-col bg-[#33445d] rounded-2xl p-5">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <p className="text-xl font-bold tracking-wide">공격 유형 비율</p>
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-gray-400">
               {attackChartMode === "all" ? "전체 공격 기준" : "오늘 공격 기준"}
             </p>
           </div>
           <div className="flex flex-col items-end gap-3">
-            <p className="whitespace-nowrap text-sm text-gray-600">
+            <p className="whitespace-nowrap text-sm text-gray-300">
               총 공격 수{" "}
               <span className="text-2xl font-extrabold text-blue-400">
                 {attackTotal.toLocaleString()}
@@ -550,7 +550,7 @@ export default function Dashboard() {
 
         <div className="relative flex flex-1 flex-col justify-center min-h-[360px]">
           {attackChartMode === "all" && attackTypeLoading && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/80 text-sm text-gray-600">
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-[#33445d]/80 text-sm text-gray-200">
               데이터를 불러오는 중...
             </div>
           )}
@@ -561,7 +561,7 @@ export default function Dashboard() {
             </div>
           ) : attackTotal === 0 &&
             !(attackChartMode === "all" && attackTypeLoading) ? (
-            <div className="flex h-full min-h-[360px] items-center justify-center rounded-xl border border-gray-200 bg-white px-4 text-center text-sm text-gray-600">
+            <div className="flex h-full min-h-[360px] items-center justify-center rounded-xl border border-[#52637a] bg-[#2f3b4c] px-4 text-center text-sm text-gray-300">
               표시할 공격 유형 데이터가 없습니다.
             </div>
           ) : (
@@ -605,13 +605,13 @@ export default function Dashboard() {
                 </ResponsiveContainer>
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="flex h-32 w-32 flex-col items-center justify-center rounded-full text-center">
-                    <span className="text-xs font-semibold text-gray-500">
+                    <span className="text-xs font-semibold text-gray-300">
                       전체 공격
                     </span>
-                    <span className="mt-1 text-2xl font-extrabold text-[#111827]">
+                    <span className="mt-1 text-2xl font-extrabold text-white">
                       {attackTotal.toLocaleString()}
                     </span>
-                    <span className="text-xs text-gray-500">건</span>
+                    <span className="text-xs text-gray-300">건</span>
                   </div>
                 </div>
               </div>
@@ -624,18 +624,18 @@ export default function Dashboard() {
                   return (
                     <div
                       key={item.name}
-                      className="border-b border-gray-200 py-3 last:border-b-0"
+                      className="border-b border-[#52637a] py-3 last:border-b-0"
                     >
                       <div className="flex items-center gap-2">
                         <span
                           className="h-3 w-3 rounded-full"
                           style={{ backgroundColor: getAttackTypeColor(item.name) }}
                         />
-                        <span className="text-sm font-semibold text-[#111827]">
+                        <span className="text-sm font-semibold text-gray-100">
                           {item.name}
                         </span>
                       </div>
-                      <div className="mt-2 text-right text-sm text-gray-500">
+                      <div className="mt-2 text-right text-sm text-gray-300">
                         <span className="font-bold text-blue-400">
                           {item.value.toLocaleString()} 건
                         </span>{" "}
@@ -651,8 +651,8 @@ export default function Dashboard() {
       </div>
 
       {/* LINE */}
-      <div className="flex h-full flex-col bg-white rounded-2xl p-5 border border-gray-200">
-        <p className="text-gray-600 text-sm mb-3">최근 7일간 공격</p>
+      <div className="flex h-full flex-col bg-[#33445d] rounded-2xl p-5">
+        <p className="text-gray-300 text-sm mb-3">최근 7일간 공격</p>
 
         <div className="relative flex flex-1 flex-col justify-center min-h-[360px]">
           <div className="w-full flex-none">
@@ -660,9 +660,9 @@ export default function Dashboard() {
           <LineChart data={weeklyAttackData}
                      margin={{ top: 10, right: 15, left: -20, bottom: 5}}
           >
-            <CartesianGrid stroke="#e5e7eb" strokeDasharray="3 3" />
-            <XAxis dataKey="t" stroke="#4b5563" />
-            <YAxis stroke="#4b5563" />
+            <CartesianGrid stroke="#52637a" strokeDasharray="3 3" />
+            <XAxis dataKey="t" stroke="#cbd5e1" />
+            <YAxis stroke="#cbd5e1" />
             <Tooltip />
             <Line
               dataKey="v"
@@ -680,8 +680,8 @@ export default function Dashboard() {
 
   {/* RIGHT PANEL */}
   <Panel title="실시간 알림 로그">
-    <div className="bg-white rounded-2xl p-5 mb-4 border border-gray-200">
-      <p className="text-sm text-gray-600 mb-2">최근 24시간 공격 추이</p>
+    <div className="bg-[#33445d] rounded-2xl p-5 mb-4">
+      <p className="text-sm text-gray-300 mb-2">최근 24시간 공격 추이</p>
 
       <ResponsiveContainer width="100%" height={130}>
         <ResponsiveContainer width="100%" height={130}>
@@ -689,7 +689,7 @@ export default function Dashboard() {
 
             <XAxis
                 dataKey="t"
-                stroke="#4b5563"
+                stroke="#cbd5e1"
                 interval={2}
             />
 
@@ -721,16 +721,16 @@ export default function Dashboard() {
 
     <div className="flex gap-3 mb-4">
       <input
-        className="flex-1 bg-white rounded-lg px-4 py-2 text-sm text-[#111827] outline-none border border-gray-200"
+        className="flex-1 bg-[#33445d] rounded-lg px-4 py-2 text-sm outline-none"
         placeholder="검색"
         value={alertSearch}
         onChange={(event) => setAlertSearch(event.target.value)}
       />
     </div>
 
-    <div className="overflow-x-auto rounded-xl border border-gray-200">
+    <div className="overflow-x-auto rounded-xl border border-[#41506a]">
       <table className="min-w-[760px] w-full text-sm">
-        <thead className="bg-white text-left text-[#111827]">
+        <thead className="bg-[#3b4b61] text-left">
           <tr>
             <Th>FlowID</Th>
             <Th>Src IP:Port</Th>
@@ -745,7 +745,7 @@ export default function Dashboard() {
           {pagedFlows.map((item) => (
             <tr
               key={item.flowId}
-              className="border-t border-gray-200 hover:bg-gray-50"
+              className="border-t border-[#41506a] hover:bg-[#34455b]"
             >
               <Td>{item.flowId}</Td>
               <Td>{`${item.srcIp}:${item.srcPort}`}</Td>
@@ -758,7 +758,7 @@ export default function Dashboard() {
                   type="button"
                   onClick={() => openTrafficDetail(item.flowId)}
                   disabled={detailLoadingId === item.flowId}
-                  className="text-[#111827] transition hover:text-gray-600 disabled:cursor-wait disabled:opacity-60"
+                  className="text-blue-300 transition hover:text-blue-200 disabled:cursor-wait disabled:opacity-60"
                 >
                   {detailLoadingId === item.flowId
                     ? "Loading..."
@@ -768,8 +768,8 @@ export default function Dashboard() {
             </tr>
           ))}
           {pagedFlows.length === 0 && (
-            <tr className="border-t border-gray-200">
-              <Td className="text-center text-gray-600" colSpan={7}>
+            <tr className="border-t border-[#41506a]">
+              <Td className="text-center text-gray-300" colSpan={7}>
                 검색 결과가 없습니다.
               </Td>
             </tr>
@@ -809,7 +809,7 @@ export default function Dashboard() {
               alertPage===1
           }
 
-          className="bg-white text-[#111827] border border-gray-200 px-4 py-2 rounded disabled:opacity-40"
+          className="bg-[#4a5568] px-4 py-2 rounded disabled:opacity-40"
       >
         Previous
       </button>
@@ -838,7 +838,7 @@ export default function Dashboard() {
               alertPageCount
           }
 
-          className="bg-white text-[#111827] border border-gray-200 px-4 py-2 rounded disabled:opacity-40"
+          className="bg-blue-500 px-4 py-2 rounded disabled:opacity-40"
       >
         Next
       </button>
@@ -894,7 +894,7 @@ function Card({ title, value, color, icon }: CardProps) {
       <div className="flex justify-between items-center mb-4">
         <p className="text-gray-500 text-sm">{title}</p>
 
-        <div className={`${color} p-3 rounded-full`}>
+        <div className={`${color} p-3 rounded-full text-white`}>
           {icon}
         </div>
       </div>
@@ -912,7 +912,7 @@ interface PanelProps {
 function Panel({ title, children }: PanelProps) {
   return (
     <div 
-      className="flex h-full flex-col bg-white text-[#111827] rounded-2xl shadow-lg p-6 border border-gray-200"
+      className="flex h-full flex-col bg-[#30425b] text-white rounded-2xl shadow-lg p-6"
       style={{
         fontFamily:
           "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif",
@@ -934,7 +934,7 @@ function ToggleGroup<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="flex rounded-lg bg-white p-1 text-xs border border-gray-200">
+    <div className="flex rounded-lg bg-[#2f3b4c] p-1 text-xs">
       {options.map((option) => (
         <button
           key={option.value}
@@ -942,8 +942,8 @@ function ToggleGroup<T extends string>({
           onClick={() => onChange(option.value)}
           className={`rounded-md px-3 py-1 transition ${
             value === option.value
-              ? "bg-white text-[#111827] border border-gray-200"
-              : "text-gray-600 hover:text-[#111827]"
+              ? "bg-blue-500 text-white"
+              : "text-gray-300 hover:text-white"
           }`}
         >
           {option.label}
