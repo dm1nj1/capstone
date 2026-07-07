@@ -1,15 +1,8 @@
-import { useState, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { useState, useEffect, useMemo, type ReactNode } from "react";
 import {
   Flame,
   AlertTriangle,
   Activity,
-  Bell,
-  CheckCircle2,
-  Clock3,
-  Eye,
-  ShieldAlert,
-  Volume2,
-  VolumeX,
   X,
 } from "lucide-react";
 
@@ -50,8 +43,6 @@ const DEFAULT_SUMMARY: SummaryData = {
 };
 const ALERTS_PER_PAGE = 5;
 const REFRESH_INTERVAL_MS = 5000;
-const ALERT_FLASH_DURATION_MS = 6000;
-const CRITICAL_RISK_SCORE = 70;
 const ATTACK_TYPE_COLORS: Record<string, string> = {
   "brute force": "#fb923c",
   "port scan": "#60a5fa",
@@ -67,82 +58,8 @@ const ATTACK_TYPE_LABELS = [
   "SYN Flood",
 ];
 const DEFAULT_ATTACK_COLOR = "#60a5fa";
-const DUMMY_NOTIFICATIONS = [
-  {
-    id: 1,
-    type: "danger",
-    title: "SSH Brute Force 탐지",
-    message: "192.168.0.14에서 로그인 반복 시도가 감지되었습니다.",
-    source: "192.168.0.14:53422",
-    target: "10.10.0.21:22",
-    detectedAt: "2026-07-01 14:28:12",
-    detail:
-      "짧은 시간 동안 동일 계정으로 SSH 인증 실패가 반복되었습니다. 비밀번호 대입 공격 가능성이 높습니다.",
-    recommendation:
-      "출발지 IP를 임시 차단하고 SSH 로그인 실패 횟수 제한 정책을 확인하세요.",
-    time: "방금 전",
-    unread: true,
-  },
-  {
-    id: 2,
-    type: "warning",
-    title: "포트 스캔 의심",
-    message: "10.0.2.8 대상 다중 포트 접근 패턴이 확인되었습니다.",
-    source: "172.16.4.33",
-    target: "10.0.2.8",
-    detectedAt: "2026-07-01 14:16:04",
-    detail:
-      "단일 출발지에서 짧은 간격으로 21, 22, 80, 443, 3306 포트 접근이 발생했습니다.",
-    recommendation:
-      "스캔 출발지를 관찰 목록에 추가하고 방화벽 접근 로그를 함께 검토하세요.",
-    time: "12분 전",
-    unread: true,
-  },
-  {
-    id: 3,
-    type: "info",
-    title: "트래픽 분석 완료",
-    message: "최근 24시간 플로우 데이터 분석이 완료되었습니다.",
-    source: "분석 엔진",
-    target: "전체 플로우",
-    detectedAt: "2026-07-01 13:50:27",
-    detail:
-      "최근 24시간 동안 수집된 네트워크 플로우에 대한 AI 위험도 산정이 완료되었습니다.",
-    recommendation:
-      "위험 점수 70점 이상 항목을 우선 확인하고 권장 조치 적용 여부를 검토하세요.",
-    time: "38분 전",
-    unread: false,
-  },
-  {
-    id: 4,
-    type: "success",
-    title: "권장 조치 적용",
-    message: "위험 IP 차단 정책이 정상 반영되었습니다.",
-    source: "정책 관리자",
-    target: "방화벽 정책",
-    detectedAt: "2026-07-01 13:28:41",
-    detail:
-      "위험도가 높은 출발지 IP에 대한 차단 규칙이 정책 목록에 추가되었습니다.",
-    recommendation:
-      "차단 이후 동일 출발지의 재시도 여부와 정상 서비스 영향 여부를 확인하세요.",
-    time: "1시간 전",
-    unread: false,
-  },
-] as const;
 
 type AttackChartMode = "all" | "today";
-type NotificationType = (typeof DUMMY_NOTIFICATIONS)[number]["type"];
-type NotificationItem = (typeof DUMMY_NOTIFICATIONS)[number];
-
-interface AccessibilityAlert {
-  id: string;
-  title: string;
-  message: string;
-  source: string;
-  target: string;
-  riskScore: string | number;
-  action: string;
-}
 
 function normalizeAttackType(name: string) {
   const normalized = name.trim().toLowerCase().replace(/[_-]/g, " ");
@@ -286,81 +203,6 @@ function buildTodayAttackData(rows: TrafficItem[]) {
     value: counts.get(normalizeAttackType(label)) ?? 0,
   }));
 }
-
-function getRiskScoreNumber(value: string | number) {
-  const score = Number(value);
-
-  return Number.isFinite(score) ? score : 0;
-}
-
-function getFlowPriority(item: AlertItem) {
-  const riskScore = getRiskScoreNumber(item.riskScore);
-  const levelScore =
-    item.level === "위험" ? 100 : item.level === "주의" ? 70 : 40;
-
-  return Math.max(riskScore, levelScore);
-}
-
-function getMostSevereFlow(items: AlertItem[]) {
-  return [...items]
-    .filter((item) => getFlowPriority(item) >= CRITICAL_RISK_SCORE)
-    .sort((a, b) => getFlowPriority(b) - getFlowPriority(a))[0];
-}
-
-function buildAccessibilityAlert(item: AlertItem): AccessibilityAlert {
-  return {
-    id: `${item.flowId}-${item.prediction}-${item.riskScore}`,
-    title: "위험 상황 통지",
-    message: `${item.prediction} 공격이 감지되었습니다. 위험 점수 ${item.riskScore}점입니다.`,
-    source: `${item.srcIp}:${item.srcPort}`,
-    target: `${item.destIp}:${item.destPort}`,
-    riskScore: item.riskScore,
-    action: item.action,
-  };
-}
-
-function playWarningTone() {
-  const AudioContextClass =
-    window.AudioContext ||
-    (window as typeof window & { webkitAudioContext?: typeof AudioContext })
-      .webkitAudioContext;
-
-  if (!AudioContextClass) return;
-
-  const audioContext = new AudioContextClass();
-  const gain = audioContext.createGain();
-  gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.18, audioContext.currentTime + 0.03);
-  gain.gain.exponentialRampToValueAtTime(0.0001, audioContext.currentTime + 1.1);
-  gain.connect(audioContext.destination);
-
-  [0, 0.32, 0.64].forEach((delay) => {
-    const oscillator = audioContext.createOscillator();
-    oscillator.type = "square";
-    oscillator.frequency.setValueAtTime(880, audioContext.currentTime + delay);
-    oscillator.connect(gain);
-    oscillator.start(audioContext.currentTime + delay);
-    oscillator.stop(audioContext.currentTime + delay + 0.18);
-  });
-
-  window.setTimeout(() => audioContext.close(), 1400);
-}
-
-function speakWarning(alert: AccessibilityAlert) {
-  if (!("speechSynthesis" in window)) return;
-
-  window.speechSynthesis.cancel();
-
-  const utterance = new SpeechSynthesisUtterance(
-    `${alert.title}. ${alert.message} 권장 조치. ${alert.action}`
-  );
-  utterance.lang = "ko-KR";
-  utterance.rate = 0.92;
-  utterance.pitch = 1;
-  utterance.volume = 1;
-
-  window.speechSynthesis.speak(utterance);
-}
 interface PieSectorRenderProps {
   cx?: number;
   cy?: number;
@@ -457,8 +299,6 @@ export default function Dashboard() {
   const [traffic, setTraffic] = useState<TrafficItem[]>([]);
   const [alertPage, setAlertPage] = useState(1);
   const [alertSearch, setAlertSearch] = useState("");
-  const [notificationOpen, setNotificationOpen] = useState(false);
-  const [notificationDetailOpen, setNotificationDetailOpen] = useState(false);
   const [attackChartMode, setAttackChartMode] =
     useState<AttackChartMode>("all");
   const [attackTypeLoading, setAttackTypeLoading] = useState(false);
@@ -468,12 +308,6 @@ export default function Dashboard() {
   );
   const [detailLoadingId, setDetailLoadingId] = useState<string | null>(null);
   const [detailError, setDetailError] = useState("");
-  const [visualAlertEnabled, setVisualAlertEnabled] = useState(true);
-  const [audioAlertEnabled, setAudioAlertEnabled] = useState(true);
-  const [accessibilityAlert, setAccessibilityAlert] =
-    useState<AccessibilityAlert | null>(null);
-  const [screenFlashActive, setScreenFlashActive] = useState(false);
-  const lastAccessibilityAlertId = useRef("");
   const allAttackChartData = useMemo(
     () => buildOrderedAttackData(pieData),
     [pieData]
@@ -498,9 +332,6 @@ export default function Dashboard() {
       (top, item) => (!top || item.value > top.value ? item : top),
       null
     )?.name ?? "SSH Brute Force";
-  const unreadNotificationCount = DUMMY_NOTIFICATIONS.filter(
-    (item) => item.unread
-  ).length;
   const weeklyAttackData = useMemo(
     () => buildRecentDailyData(traffic, lineData),
     [lineData, traffic]
@@ -639,142 +470,17 @@ export default function Dashboard() {
     setAlertPage(1);
   }, [alertSearch]);
 
-  useEffect(() => {
-    const mostSevereFlow = getMostSevereFlow(flows);
-
-    if (!mostSevereFlow) return;
-
-    const nextAlert = buildAccessibilityAlert(mostSevereFlow);
-
-    if (lastAccessibilityAlertId.current === nextAlert.id) return;
-
-    lastAccessibilityAlertId.current = nextAlert.id;
-    setAccessibilityAlert(nextAlert);
-
-    if (visualAlertEnabled) {
-      setScreenFlashActive(true);
-    }
-
-    if (audioAlertEnabled) {
-      try {
-        playWarningTone();
-        speakWarning(nextAlert);
-      } catch (err) {
-        console.error("Accessible audio alert error:", err);
-      }
-    }
-
-    const flashTimer = window.setTimeout(
-      () => setScreenFlashActive(false),
-      ALERT_FLASH_DURATION_MS
-    );
-
-    return () => window.clearTimeout(flashTimer);
-  }, [audioAlertEnabled, flows, visualAlertEnabled]);
-
   return (
     <div className="min-h-screen bg-[#edf1f7] p-6" style={{ fontFamily: "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif", }}>
-      <style>
-        {`
-          @keyframes accessible-screen-flash {
-            0%, 100% { opacity: 0; }
-            12%, 42%, 72% { opacity: 0.32; }
-            27%, 57%, 87% { opacity: 0.08; }
-          }
-
-          @keyframes accessible-alert-pulse {
-            0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
-            50% { box-shadow: 0 0 0 12px rgba(239, 68, 68, 0); }
-          }
-
-          .accessible-screen-flash {
-            animation: accessible-screen-flash 1s ease-in-out infinite;
-          }
-
-          .accessible-alert-pulse {
-            animation: accessible-alert-pulse 1.2s ease-in-out infinite;
-          }
-        `}
-      </style>
-
-      {screenFlashActive && visualAlertEnabled && (
-        <div
-          className="accessible-screen-flash pointer-events-none fixed inset-0 z-[60] bg-red-500"
-          aria-hidden="true"
-        />
-      )}
-
       {/* HEADER */}
-      <div className="bg-white text-[#111827] px-8 py-5 rounded-2xl shadow-lg flex justify-between items-center mb-8">
+      <div className="bg-[#30425b] text-white px-8 py-5 rounded-2xl shadow-lg flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold tracking-wide">
-          한이음 프로젝트
+          보안 시스템 대시보드
         </h1>
 
-        <div className="flex items-center gap-5">
-          <p className="text-sm text-gray-600">
-            현재 {currentAttackType} 공격이 점증 발생 중
-          </p>
-
-          <div className="flex rounded-xl border border-gray-200 bg-gray-50 p-1">
-            <button
-              type="button"
-              onClick={() => setVisualAlertEnabled((enabled) => !enabled)}
-              className={`flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${
-                visualAlertEnabled
-                  ? "bg-white text-blue-700 shadow-sm"
-                  : "text-gray-500 hover:text-[#111827]"
-              }`}
-              aria-pressed={visualAlertEnabled}
-              aria-label="시각 알림 켜기 또는 끄기"
-              title="시각 알림"
-            >
-              <Eye size={18} />
-              시각
-            </button>
-            <button
-              type="button"
-              onClick={() => setAudioAlertEnabled((enabled) => !enabled)}
-              className={`flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${
-                audioAlertEnabled
-                  ? "bg-white text-blue-700 shadow-sm"
-                  : "text-gray-500 hover:text-[#111827]"
-              }`}
-              aria-pressed={audioAlertEnabled}
-              aria-label="청각 알림 켜기 또는 끄기"
-              title="청각 알림"
-            >
-              {audioAlertEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
-              청각
-            </button>
-          </div>
-
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setNotificationOpen((open) => !open)}
-              className="relative flex h-11 w-11 items-center justify-center rounded-full border border-gray-200 bg-white text-[#111827] shadow-sm transition hover:bg-gray-50"
-              aria-label="알림 열기"
-            >
-              <Bell size={20} />
-              {unreadNotificationCount > 0 && (
-                <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1 text-xs font-bold text-white">
-                  {unreadNotificationCount}
-                </span>
-              )}
-            </button>
-
-            {notificationOpen && (
-              <NotificationDropdown
-                unreadCount={unreadNotificationCount}
-                onClose={() => setNotificationOpen(false)}
-                onViewAll={() => {
-                  setNotificationOpen(false);
-                  setNotificationDetailOpen(true);
-                }}
-              />
-            )}
-          </div>
-        </div>
+        <p className="text-sm opacity-90">
+          현재 {currentAttackType} 공격이 점증 발생 중
+        </p>
       </div>
 
       {/* TOP SUMMARY */}
@@ -789,7 +495,7 @@ export default function Dashboard() {
         <Card
           title="오늘 공격 수"
           value={`${data.attackCount}건`}
-          color="bg-blue-500 text-white"
+          color="bg-blue-500"
           icon={<AlertTriangle size={20} />}
         />
 
@@ -809,22 +515,22 @@ export default function Dashboard() {
       </div>
 
       {/* CENTER */}
-      <div className="grid grid-cols-2 items-stretch gap-6 mb-8">
+<div className="grid grid-cols-2 items-stretch gap-6 mb-8">
 
   {/* LEFT PANEL */}
   <Panel title="실시간 공격 상태">
-    <div className="grid min-h-0 flex-1 grid-cols-1 gap-4">
+    <div className="grid h-full flex-1 grid-cols-2 gap-4">
       {/* PIE */}
-      <div className="flex min-h-0 flex-col rounded-2xl border border-gray-200 bg-white p-5 text-[#111827]">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div className="flex h-full flex-col bg-[#33445d] rounded-2xl p-5">
+        <div className="mb-4 flex items-start justify-between gap-3">
           <div>
             <p className="text-xl font-bold tracking-wide">공격 유형 비율</p>
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-gray-400">
               {attackChartMode === "all" ? "전체 공격 기준" : "오늘 공격 기준"}
             </p>
           </div>
           <div className="flex flex-col items-end gap-3">
-            <p className="whitespace-nowrap text-sm text-gray-600">
+            <p className="whitespace-nowrap text-sm text-gray-300">
               총 공격 수{" "}
               <span className="text-2xl font-extrabold text-blue-400">
                 {attackTotal.toLocaleString()}
@@ -842,9 +548,9 @@ export default function Dashboard() {
           </div>
         </div>
 
-        <div className="relative flex min-h-[420px] flex-1 flex-col justify-center">
+        <div className="relative flex flex-1 flex-col justify-center min-h-[360px]">
           {attackChartMode === "all" && attackTypeLoading && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/80 text-sm text-gray-600">
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-[#33445d]/80 text-sm text-gray-200">
               데이터를 불러오는 중...
             </div>
           )}
@@ -855,20 +561,20 @@ export default function Dashboard() {
             </div>
           ) : attackTotal === 0 &&
             !(attackChartMode === "all" && attackTypeLoading) ? (
-            <div className="flex h-full min-h-[360px] items-center justify-center rounded-xl border border-gray-200 bg-white px-4 text-center text-sm text-gray-600">
+            <div className="flex h-full min-h-[360px] items-center justify-center rounded-xl border border-[#52637a] bg-[#2f3b4c] px-4 text-center text-sm text-gray-300">
               표시할 공격 유형 데이터가 없습니다.
             </div>
           ) : (
-            <div className="flex flex-1 flex-col gap-5 lg:flex-row lg:items-stretch">
-              <div className="relative min-h-[420px] flex-1 min-w-0">
+            <div className="grid flex-1 items-center gap-5 lg:grid-cols-[minmax(240px,1fr)_minmax(180px,220px)]">
+              <div className="relative h-[300px] min-w-0">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
                       data={chartData}
                       dataKey="value"
                       nameKey="name"
-                      outerRadius={118}
-                      innerRadius={60}
+                      outerRadius={102}
+                      innerRadius={52}
                       paddingAngle={1}
                       stroke="#ffffff"
                       strokeWidth={3}
@@ -898,19 +604,19 @@ export default function Dashboard() {
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                  <div className="flex h-36 w-36 flex-col items-center justify-center rounded-full text-center">
-                    <span className="text-xs font-semibold text-gray-500">
+                  <div className="flex h-32 w-32 flex-col items-center justify-center rounded-full text-center">
+                    <span className="text-xs font-semibold text-gray-300">
                       전체 공격
                     </span>
-                    <span className="mt-1 text-2xl font-extrabold text-[#111827]">
+                    <span className="mt-1 text-2xl font-extrabold text-white">
                       {attackTotal.toLocaleString()}
                     </span>
-                    <span className="text-xs text-gray-500">건</span>
+                    <span className="text-xs text-gray-300">건</span>
                   </div>
                 </div>
               </div>
 
-              <div className="grid w-full gap-2 border-t border-gray-200 pt-4 lg:w-64 lg:shrink-0 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+              <div className="space-y-1">
                 {chartData.map((item) => {
                   const percent =
                     attackTotal > 0 ? (item.value / attackTotal) * 100 : 0;
@@ -918,24 +624,22 @@ export default function Dashboard() {
                   return (
                     <div
                       key={item.name}
-                      className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2"
+                      className="border-b border-[#52637a] py-3 last:border-b-0"
                     >
-                      <div className="flex flex-col gap-1">
-                        <div className="flex min-w-0 items-start gap-2">
-                          <span
-                            className="mt-1 h-3 w-3 shrink-0 rounded-full"
-                            style={{ backgroundColor: getAttackTypeColor(item.name) }}
-                          />
-                          <span className="break-words text-sm font-semibold leading-5 text-[#111827]">
-                            {item.name}
-                          </span>
-                        </div>
-                        <div className="pl-5 text-sm text-gray-500">
-                          <span className="font-bold text-blue-400">
-                            {item.value.toLocaleString()}건
-                          </span>{" "}
-                          ({percent.toFixed(1)}%)
-                        </div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="h-3 w-3 rounded-full"
+                          style={{ backgroundColor: getAttackTypeColor(item.name) }}
+                        />
+                        <span className="text-sm font-semibold text-gray-100">
+                          {item.name}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-right text-sm text-gray-300">
+                        <span className="font-bold text-blue-400">
+                          {item.value.toLocaleString()} 건
+                        </span>{" "}
+                        ({percent.toFixed(1)}%)
                       </div>
                     </div>
                   );
@@ -947,54 +651,37 @@ export default function Dashboard() {
       </div>
 
       {/* LINE */}
-      <div className="flex min-h-0 flex-col rounded-2xl border border-gray-200 bg-white p-5">
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
-            <p className="text-xl font-bold tracking-wide text-[#111827]">
-              최근 7일간 공격
-            </p>
-            <p className="mt-1 text-xs text-gray-500">일별 탐지 건수</p>
-          </div>
-          <p className="whitespace-nowrap text-sm text-gray-600">
-            총{" "}
-            <span className="text-2xl font-extrabold text-orange-400">
-              {weeklyAttackData
-                .reduce((total, item) => total + Number(item.v ?? 0), 0)
-                .toLocaleString()}
-            </span>{" "}
-            건
-          </p>
-        </div>
+      <div className="flex h-full flex-col bg-[#33445d] rounded-2xl p-5">
+        <p className="text-gray-300 text-sm mb-3">최근 7일간 공격</p>
 
-        <div className="relative h-[220px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart
-              data={weeklyAttackData}
-              margin={{ top: 12, right: 18, left: -18, bottom: 8 }}
-            >
-              <CartesianGrid stroke="#e5e7eb" strokeDasharray="3 3" />
-              <XAxis dataKey="t" stroke="#4b5563" />
-              <YAxis stroke="#4b5563" allowDecimals={false} />
-              <Tooltip formatter={(value) => [`${value}건`, "공격 수"]} />
-              <Line
-                type="monotone"
-                dataKey="v"
-                stroke="#f5a623"
-                strokeWidth={3}
-                dot={{ r: 4 }}
-                activeDot={{ r: 6 }}
-              />
-            </LineChart>
+        <div className="relative flex flex-1 flex-col justify-center min-h-[360px]">
+          <div className="w-full flex-none">
+          <ResponsiveContainer width="100%" height={320}>
+          <LineChart data={weeklyAttackData}
+                     margin={{ top: 10, right: 15, left: -20, bottom: 5}}
+          >
+            <CartesianGrid stroke="#52637a" strokeDasharray="3 3" />
+            <XAxis dataKey="t" stroke="#cbd5e1" />
+            <YAxis stroke="#cbd5e1" />
+            <Tooltip />
+            <Line
+              dataKey="v"
+              stroke="#f5a623"
+              strokeWidth={3}
+              dot={{ r: 4 }}
+            />
+          </LineChart>
           </ResponsiveContainer>
         </div>
+      </div>
       </div>
     </div>
   </Panel>
 
   {/* RIGHT PANEL */}
   <Panel title="실시간 알림 로그">
-    <div className="bg-white rounded-2xl p-5 mb-4 border border-gray-200">
-      <p className="text-sm text-gray-600 mb-2">최근 24시간 공격 추이</p>
+    <div className="bg-[#33445d] rounded-2xl p-5 mb-4">
+      <p className="text-sm text-gray-300 mb-2">최근 24시간 공격 추이</p>
 
       <ResponsiveContainer width="100%" height={130}>
         <ResponsiveContainer width="100%" height={130}>
@@ -1002,7 +689,7 @@ export default function Dashboard() {
 
             <XAxis
                 dataKey="t"
-                stroke="#4b5563"
+                stroke="#cbd5e1"
                 interval={2}
             />
 
@@ -1034,31 +721,31 @@ export default function Dashboard() {
 
     <div className="flex gap-3 mb-4">
       <input
-        className="flex-1 bg-white rounded-lg px-4 py-2 text-sm text-[#111827] outline-none border border-gray-200"
+        className="flex-1 bg-[#33445d] rounded-lg px-4 py-2 text-sm outline-none"
         placeholder="검색"
         value={alertSearch}
         onChange={(event) => setAlertSearch(event.target.value)}
       />
     </div>
 
-    <div className="overflow-x-auto rounded-xl border border-gray-200">
+    <div className="overflow-x-auto rounded-xl border border-[#41506a]">
       <table className="min-w-[760px] w-full text-sm">
-        <thead className="bg-white text-left text-[#111827]">
+        <thead className="bg-[#3b4b61] text-left">
           <tr>
-            <Th>흐름 ID</Th>
-            <Th>출발지 IP:포트</Th>
-            <Th>목적지 IP:포트</Th>
-            <Th>분석 결과</Th>
-            <Th>권장 조치</Th>
-            <Th>위험 점수</Th>
-            <Th>상세</Th>
+            <Th>FlowID</Th>
+            <Th>Src IP:Port</Th>
+            <Th>Dest IP:Port</Th>
+            <Th>Prediction</Th>
+            <Th>Action</Th>
+            <Th>RiskScore</Th>
+            <Th>Details</Th>
           </tr>
         </thead>
         <tbody>
           {pagedFlows.map((item) => (
             <tr
               key={item.flowId}
-              className="border-t border-gray-200 hover:bg-gray-50"
+              className="border-t border-[#41506a] hover:bg-[#34455b]"
             >
               <Td>{item.flowId}</Td>
               <Td>{`${item.srcIp}:${item.srcPort}`}</Td>
@@ -1071,18 +758,18 @@ export default function Dashboard() {
                   type="button"
                   onClick={() => openTrafficDetail(item.flowId)}
                   disabled={detailLoadingId === item.flowId}
-                  className="text-[#111827] transition hover:text-gray-600 disabled:cursor-wait disabled:opacity-60"
+                  className="text-blue-300 transition hover:text-blue-200 disabled:cursor-wait disabled:opacity-60"
                 >
                   {detailLoadingId === item.flowId
-                    ? "불러오는 중..."
-                    : "상세 보기"}
+                    ? "Loading..."
+                    : "View Details"}
                 </button>
               </Td>
             </tr>
           ))}
           {pagedFlows.length === 0 && (
-            <tr className="border-t border-gray-200">
-              <Td className="text-center text-gray-600" colSpan={7}>
+            <tr className="border-t border-[#41506a]">
+              <Td className="text-center text-gray-300" colSpan={7}>
                 검색 결과가 없습니다.
               </Td>
             </tr>
@@ -1122,7 +809,7 @@ export default function Dashboard() {
               alertPage===1
           }
 
-          className="bg-white text-[#111827] border border-gray-200 px-4 py-2 rounded disabled:opacity-40"
+          className="bg-[#4a5568] px-4 py-2 rounded disabled:opacity-40"
       >
         Previous
       </button>
@@ -1151,7 +838,7 @@ export default function Dashboard() {
               alertPageCount
           }
 
-          className="bg-white text-[#111827] border border-gray-200 px-4 py-2 rounded disabled:opacity-40"
+          className="bg-blue-500 px-4 py-2 rounded disabled:opacity-40"
       >
         Next
       </button>
@@ -1175,24 +862,6 @@ export default function Dashboard() {
   </Panel>
 </div>
 
-      {accessibilityAlert && visualAlertEnabled && (
-        <AccessibleAlertBanner
-          alert={accessibilityAlert}
-          onReplayAudio={() => {
-            try {
-              playWarningTone();
-              speakWarning(accessibilityAlert);
-            } catch (err) {
-              console.error("Accessible audio replay error:", err);
-            }
-          }}
-          onClose={() => {
-            setScreenFlashActive(false);
-            setAccessibilityAlert(null);
-          }}
-        />
-      )}
-
       {detailError && (
         <div className="fixed bottom-6 right-6 rounded-lg bg-red-500 px-4 py-3 text-sm font-semibold text-white shadow-lg">
           {detailError}
@@ -1203,13 +872,6 @@ export default function Dashboard() {
         <DetailModal
           detail={selectedTraffic}
           onClose={() => setSelectedTraffic(null)}
-        />
-      )}
-
-      {notificationDetailOpen && (
-        <NotificationDetailModal
-          notifications={DUMMY_NOTIFICATIONS}
-          onClose={() => setNotificationDetailOpen(false)}
         />
       )}
     </div>
@@ -1232,7 +894,7 @@ function Card({ title, value, color, icon }: CardProps) {
       <div className="flex justify-between items-center mb-4">
         <p className="text-gray-500 text-sm">{title}</p>
 
-        <div className={`${color} p-3 rounded-full`}>
+        <div className={`${color} p-3 rounded-full text-white`}>
           {icon}
         </div>
       </div>
@@ -1250,7 +912,7 @@ interface PanelProps {
 function Panel({ title, children }: PanelProps) {
   return (
     <div 
-      className="flex h-full flex-col bg-white text-[#111827] rounded-2xl shadow-lg p-6 border border-gray-200"
+      className="flex h-full flex-col bg-[#30425b] text-white rounded-2xl shadow-lg p-6"
       style={{
         fontFamily:
           "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif",
@@ -1272,7 +934,7 @@ function ToggleGroup<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="flex rounded-lg bg-white p-1 text-xs border border-gray-200">
+    <div className="flex rounded-lg bg-[#2f3b4c] p-1 text-xs">
       {options.map((option) => (
         <button
           key={option.value}
@@ -1280,8 +942,8 @@ function ToggleGroup<T extends string>({
           onClick={() => onChange(option.value)}
           className={`rounded-md px-3 py-1 transition ${
             value === option.value
-              ? "bg-white text-[#111827] border border-gray-200"
-              : "text-gray-600 hover:text-[#111827]"
+              ? "bg-blue-500 text-white"
+              : "text-gray-300 hover:text-white"
           }`}
         >
           {option.label}
@@ -1289,271 +951,6 @@ function ToggleGroup<T extends string>({
       ))}
     </div>
   );
-}
-
-function AccessibleAlertBanner({
-  alert,
-  onReplayAudio,
-  onClose,
-}: {
-  alert: AccessibilityAlert;
-  onReplayAudio: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <section
-      className="accessible-alert-pulse fixed bottom-6 left-1/2 z-[70] w-[calc(100%-3rem)] max-w-4xl -translate-x-1/2 overflow-hidden rounded-2xl border-4 border-yellow-300 bg-[#111827] text-white shadow-2xl"
-      role="alert"
-      aria-live="assertive"
-    >
-      <div className="flex flex-col gap-4 p-5 md:flex-row md:items-center md:justify-between">
-        <div className="flex min-w-0 gap-4">
-          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-red-500 text-white">
-            <ShieldAlert size={30} />
-          </div>
-
-          <div className="min-w-0">
-            <p className="text-sm font-black uppercase tracking-wide text-yellow-300">
-              시각 알림 · 청각 안내
-            </p>
-            <h3 className="mt-1 text-2xl font-black">{alert.title}</h3>
-            <p className="mt-2 text-lg font-bold leading-7">{alert.message}</p>
-
-            <div className="mt-3 grid gap-2 text-sm text-gray-100 md:grid-cols-3">
-              <span className="rounded-lg bg-white/10 px-3 py-2">
-                출발지 {alert.source}
-              </span>
-              <span className="rounded-lg bg-white/10 px-3 py-2">
-                목적지 {alert.target}
-              </span>
-              <span className="rounded-lg bg-red-500 px-3 py-2 font-black">
-                위험 점수 {alert.riskScore}
-              </span>
-            </div>
-
-            <p className="mt-3 text-sm leading-6 text-yellow-100">
-              권장 조치: {alert.action}
-            </p>
-          </div>
-        </div>
-
-        <div className="flex shrink-0 gap-2 md:flex-col">
-          <button
-            type="button"
-            onClick={onReplayAudio}
-            className="flex items-center justify-center gap-2 rounded-lg bg-yellow-300 px-4 py-3 text-sm font-black text-[#111827] transition hover:bg-yellow-200"
-          >
-            <Volume2 size={18} />
-            다시 듣기
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex items-center justify-center gap-2 rounded-lg border border-white/40 px-4 py-3 text-sm font-bold text-white transition hover:bg-white/10"
-          >
-            <X size={18} />
-            닫기
-          </button>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function NotificationDropdown({
-  unreadCount,
-  onClose,
-  onViewAll,
-}: {
-  unreadCount: number;
-  onClose: () => void;
-  onViewAll: () => void;
-}) {
-  return (
-    <div className="absolute right-0 top-14 z-40 w-[380px] overflow-hidden rounded-2xl border border-gray-200 bg-white text-[#111827] shadow-2xl">
-      <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
-        <div>
-          <h3 className="text-lg font-bold">알림</h3>
-          <p className="mt-1 text-xs text-gray-500">
-            읽지 않은 알림 {unreadCount}개
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-full p-2 text-gray-500 transition hover:bg-gray-100 hover:text-[#111827]"
-          aria-label="알림 닫기"
-        >
-          <X size={18} />
-        </button>
-      </div>
-
-      <div className="max-h-[420px] overflow-y-auto">
-        {DUMMY_NOTIFICATIONS.map((item) => (
-          <div
-            key={item.id}
-            className={`flex gap-3 border-b border-gray-100 px-5 py-4 last:border-b-0 ${
-              item.unread ? "bg-blue-50/60" : "bg-white"
-            }`}
-          >
-            <div
-              className={`mt-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-full ${getNotificationStyle(
-                item.type
-              ).iconBg}`}
-            >
-              {getNotificationIcon(item.type)}
-            </div>
-
-            <div className="min-w-0 flex-1">
-              <div className="flex items-start justify-between gap-3">
-                <p className="font-semibold text-[#111827]">{item.title}</p>
-                {item.unread && (
-                  <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-blue-500" />
-                )}
-              </div>
-              <p className="mt-1 text-sm leading-5 text-gray-600">
-                {item.message}
-              </p>
-              <div className="mt-3 flex items-center gap-1 text-xs text-gray-500">
-                <Clock3 size={13} />
-                <span>{item.time}</span>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <div className="border-t border-gray-200 bg-gray-50 px-5 py-3">
-        <button
-          type="button"
-          onClick={onViewAll}
-          className="w-full rounded-lg bg-[#111827] px-4 py-2 text-sm font-semibold text-white transition hover:bg-gray-700"
-        >
-          전체 알림 보기
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function NotificationDetailModal({
-  notifications,
-  onClose,
-}: {
-  notifications: readonly NotificationItem[];
-  onClose: () => void;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="max-h-[92vh] w-full max-w-5xl overflow-hidden rounded-2xl bg-white text-[#111827] shadow-2xl">
-        <div className="flex items-center justify-between border-b border-gray-200 px-6 py-5">
-          <div>
-            <h3 className="text-xl font-bold">전체 알림 상세</h3>
-            <p className="mt-1 text-sm text-gray-600">
-              알림별 탐지 정보와 권장 조치를 확인하세요.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-full p-2 text-gray-600 transition hover:bg-gray-100 hover:text-[#111827]"
-            aria-label="전체 알림 상세 닫기"
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="max-h-[calc(92vh-88px)] overflow-y-auto p-6">
-          <div className="grid gap-4 md:grid-cols-2">
-            {notifications.map((item) => (
-              <div
-                key={item.id}
-                className={`rounded-xl border p-5 ${
-                  item.unread
-                    ? "border-blue-200 bg-blue-50/60"
-                    : "border-gray-200 bg-white"
-                }`}
-              >
-                <div className="flex items-start gap-3">
-                  <div
-                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${getNotificationStyle(
-                      item.type
-                    ).iconBg}`}
-                  >
-                    {getNotificationIcon(item.type)}
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-bold text-[#111827]">{item.title}</p>
-                        <p className="mt-1 text-sm text-gray-600">
-                          {item.message}
-                        </p>
-                      </div>
-                      {item.unread && (
-                        <span className="rounded-full bg-blue-500 px-2 py-1 text-xs font-semibold text-white">
-                          신규
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-5 space-y-3 text-sm">
-                  <DetailRow label="발생 시각" value={item.detectedAt} />
-                  <DetailRow label="출발지" value={item.source} />
-                  <DetailRow label="대상" value={item.target} />
-                </div>
-
-                <div className="mt-5 rounded-lg border border-gray-200 bg-white px-4 py-3">
-                  <p className="mb-2 text-sm font-semibold">상세 내용</p>
-                  <p className="text-sm leading-6 text-gray-700">
-                    {item.detail}
-                  </p>
-                </div>
-
-                <div className="mt-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
-                  <p className="mb-2 text-sm font-semibold">권장 조치</p>
-                  <p className="text-sm leading-6 text-gray-700">
-                    {item.recommendation}
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function getNotificationStyle(type: NotificationType) {
-  const styles = {
-    danger: {
-      iconBg: "bg-red-100 text-red-600",
-    },
-    warning: {
-      iconBg: "bg-yellow-100 text-yellow-700",
-    },
-    info: {
-      iconBg: "bg-blue-100 text-blue-600",
-    },
-    success: {
-      iconBg: "bg-green-100 text-green-600",
-    },
-  };
-
-  return styles[type];
-}
-
-function getNotificationIcon(type: NotificationType) {
-  const className = "h-5 w-5";
-
-  if (type === "success") return <CheckCircle2 className={className} />;
-  if (type === "info") return <Activity className={className} />;
-
-  return <ShieldAlert className={className} />;
 }
 
 function DetailModal({
@@ -1570,8 +967,8 @@ function DetailModal({
       <div className="max-h-[96vh] w-full max-w-7xl overflow-y-auto rounded-2xl bg-white text-[#111827] shadow-2xl">
         <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
           <div>
-            <h3 className="text-xl font-bold">트래픽 상세 정보</h3>
-            <p className="mt-1 text-sm text-gray-600">흐름 ID {detail.flowId}</p>
+            <h3 className="text-xl font-bold">Traffic Detail</h3>
+            <p className="mt-1 text-sm text-gray-600">FlowID {detail.flowId}</p>
           </div>
           <button
             type="button"
@@ -1587,14 +984,14 @@ function DetailModal({
           <div className="rounded-xl bg-white p-5 border border-gray-200">
             <h4 className="mb-4 font-semibold">Flow Info</h4>
             <div className="space-y-3 text-sm">
-              <DetailRow label="출발지 IP" value={detail.srcIp} />
-              <DetailRow label="출발지 포트" value={detail.srcPort} />
-              <DetailRow label="목적지 IP" value={detail.dstIp} />
-              <DetailRow label="목적지 포트" value={detail.dstPort} />
-              <DetailRow label="통신 방식" value={detail.protocol} />
-              <DetailRow label="시작 시간" value={detail.startTime} />
-              <DetailRow label="종료 시간" value={detail.endTime} />
-              <DetailRow label="TCP 플래그" value={detail.tcpFlags} />
+              <DetailRow label="Source IP" value={detail.srcIp} />
+              <DetailRow label="Source Port" value={detail.srcPort} />
+              <DetailRow label="Destination IP" value={detail.dstIp} />
+              <DetailRow label="Destination Port" value={detail.dstPort} />
+              <DetailRow label="Protocol" value={detail.protocol} />
+              <DetailRow label="Start Time" value={detail.startTime} />
+              <DetailRow label="End Time" value={detail.endTime} />
+              <DetailRow label="TCP Flags" value={detail.tcpFlags} />
             </div>
           </div>
 
@@ -1602,13 +999,13 @@ function DetailModal({
             <h4 className="mb-4 font-semibold">AI Analysis</h4>
             {aiResult ? (
               <div className="space-y-3 text-sm">
-                <DetailRow label="모델" value={aiResult.modelName} />
-                <DetailRow label="분석 결과" value={aiResult.prediction} />
-                <DetailRow label="공격 유형" value={aiResult.attackType} />
-                <DetailRow label="신뢰도" value={aiResult.confidence} />
-                <DetailRow label="위험 점수" value={aiResult.riskScore} />
-                <DetailRow label="권장 조치" value={aiResult.action} />
-                <DetailRow label="분석 시각" value={aiResult.analyzedAt} />
+                <DetailRow label="Model" value={aiResult.modelName} />
+                <DetailRow label="Prediction" value={aiResult.prediction} />
+                <DetailRow label="Attack Type" value={aiResult.attackType} />
+                <DetailRow label="Confidence" value={aiResult.confidence} />
+                <DetailRow label="Risk Score" value={aiResult.riskScore} />
+                <DetailRow label="Action" value={aiResult.action} />
+                <DetailRow label="Analyzed At" value={aiResult.analyzedAt} />
               </div>
             ) : (
               <p className="text-sm text-gray-600">No AI analysis data.</p>
