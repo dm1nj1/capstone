@@ -303,11 +303,36 @@ export async function fetchAlerts(): Promise<AlertItem[]> {
 
     return isAttackTraffic(item);
   }).map(({ item, aiResult }) => {
-    const srcIp = item.srcIp ?? item.sourceIp ?? "-";
-    const srcPort = item.srcPort ?? item.sourcePort ?? item.sport ?? "-";
-    const destIp = item.destIp ?? item.dstIp ?? item.destinationIp ?? "-";
+    const srcIp =
+      item.srcIp ?? item.src_ip ?? item.sourceIp ?? item.source_ip ?? "-";
+    const srcPort =
+      item.srcPort ??
+      item.srcport ??
+      item.src_port ??
+      item.sourcePort ??
+      item.source_port ??
+      item.sport ??
+      "-";
+    const destIp =
+      item.destIp ??
+      item.dest_ip ??
+      item.dstIp ??
+      item.dst_ip ??
+      item.destinationIp ??
+      item.destination_ip ??
+      "-";
     const destPort =
-      item.destPort ?? item.destport ?? item.dstPort ?? item.port ?? "-";
+      item.destPort ??
+      item.destport ??
+      item.dest_port ??
+      item.dstPort ??
+      item.dstport ??
+      item.dst_port ??
+      item.destinationPort ??
+      item.destination_port ??
+      item.dport ??
+      item.port ??
+      "-";
     const prediction = aiResult ? getPrediction(aiResult) : getPrediction(item);
 
     return {
@@ -315,7 +340,7 @@ export async function fetchAlerts(): Promise<AlertItem[]> {
       ip: `${srcIp}:${srcPort} -> ${destIp}:${destPort} · ${formatTcpFlags(
         item
       )}`,
-      flowId: String(item.flowId ?? item.id ?? "-"),
+      flowId: String(item.flowId ?? item.flow_id ?? item.id ?? "-"),
       srcIp,
       srcPort,
       destIp,
@@ -418,16 +443,63 @@ export async function fetchTraffic(
     (json.totalElements ? Math.ceil(json.totalElements / size) : undefined) ??
     Math.max(1, Math.ceil(rows.length / size), page);
   const hasNext =
-    json.last === false ||
-    json.hasNext === true ||
-    json.next === true ||
-    (rows.length === size && rows.length > 0);
+    typeof json.last === "boolean"
+      ? !json.last
+      : typeof json.hasNext === "boolean"
+        ? json.hasNext
+        : typeof json.next === "boolean"
+          ? json.next
+          : rows.length === size && rows.length > 0;
 
   return {
     items: toTrafficItems(rows),
     totalPages: Math.max(1, totalPages, page + (hasNext ? 1 : 0)),
     hasNext,
   };
+}
+
+export async function fetchAllTraffic(size = 500): Promise<TrafficItem[]> {
+  const items: TrafficItem[] = [];
+  let page = 1;
+  let hasNext = true;
+
+  while (hasNext) {
+    const pageIndex = page - 1;
+    const response = await fetch(
+      `${API_BASE}/api/flows?page=${pageIndex}&size=${size}`
+    );
+
+    if (!response.ok) {
+      throw new Error(`Traffic API Error: ${response.status}`);
+    }
+
+    const json: any = await response.json();
+
+    if (Array.isArray(json)) {
+      const totalPages = Math.max(1, Math.ceil(json.length / size));
+      items.push(
+        ...toTrafficItems(json.slice(pageIndex * size, pageIndex * size + size))
+      );
+      hasNext = page < totalPages;
+    } else {
+      const rows: any[] =
+        json.content ?? json.data ?? json.flows ?? json.items ?? [];
+      items.push(...toTrafficItems(rows));
+
+      hasNext =
+        typeof json.last === "boolean"
+          ? !json.last
+          : typeof json.hasNext === "boolean"
+            ? json.hasNext
+            : typeof json.next === "boolean"
+              ? json.next
+              : rows.length === size && rows.length > 0;
+    }
+
+    page += 1;
+  }
+
+  return items;
 }
 
 export async function fetchTrafficDetail(

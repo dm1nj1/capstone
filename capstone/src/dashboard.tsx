@@ -16,6 +16,7 @@ import {
   Volume2,
   VolumeX,
   X,
+  Search,
 } from "lucide-react";
 
 import {
@@ -37,6 +38,7 @@ import {
   fetchAttackTypes,
   fetchTimeline,
   fetchTraffic,
+  fetchAllTraffic,
   fetchTrafficDetail,
   fetchAlerts,
   type AlertItem,
@@ -54,13 +56,14 @@ const DEFAULT_SUMMARY: SummaryData = {
   averageRisk: 0,
 };
 const ALERTS_PER_PAGE = 5;
+const TRAFFIC_LOGS_PER_PAGE = 5;
 const REFRESH_INTERVAL_MS = 5000;
 const ALERT_FLASH_DURATION_MS = 6000;
 const CRITICAL_RISK_SCORE = 70;
 const ATTACK_TYPE_COLORS: Record<string, string> = {
   "brute force": "#fb923c",
   "port scan": "#60a5fa",
-  "network scan": "#facc15",
+  "network scan": "#a78bfa",
   ddos: "#22c55e",
   "syn flood": "#f87171",
 };
@@ -170,6 +173,7 @@ const AUTH_MENU_ITEMS = [
 ] as const;
 
 type AttackChartMode = "all" | "today";
+type TrafficDateRange = "all" | "24h" | "7d" | "30d";
 type NotificationType = (typeof DUMMY_NOTIFICATIONS)[number]["type"];
 type NotificationItem = (typeof DUMMY_NOTIFICATIONS)[number];
 
@@ -423,7 +427,7 @@ function renderDonutLabel({
   outerRadius = 0,
   percent,
 }: PieLabelProps) {
-  if (!percent) return "";
+  if (!percent || percent < 0.05) return "";
 
   const radius = innerRadius + (outerRadius - innerRadius) * 0.58;
   const angle = (-midAngle * Math.PI) / 180;
@@ -494,8 +498,18 @@ export default function Dashboard() {
   const [lineData, setLineData] = useState<TimelineItem[]>([]);
   const [flows, setFlows] = useState<AlertItem[]>([]);
   const [traffic, setTraffic] = useState<TrafficItem[]>([]);
+  const [allTraffic, setAllTraffic] = useState<TrafficItem[]>([]);
   const [alertPage, setAlertPage] = useState(1);
   const [alertSearch, setAlertSearch] = useState("");
+  const [trafficSearch, setTrafficSearch] = useState("");
+  const [submittedTrafficSearch, setSubmittedTrafficSearch] = useState("");
+  const [sourceIpFilter, setSourceIpFilter] = useState("");
+  const [dateRangeFilter, setDateRangeFilter] =
+    useState<TrafficDateRange>("all");
+  const [portFilter, setPortFilter] = useState("");
+  const [trafficPage, setTrafficPage] = useState(1);
+  const [trafficLoading, setTrafficLoading] = useState(true);
+  const [trafficError, setTrafficError] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [notificationDetailOpen, setNotificationDetailOpen] = useState(false);
@@ -559,8 +573,10 @@ export default function Dashboard() {
               item.flowId,
               item.srcIp,
               item.srcPort,
+              `${item.srcIp}:${item.srcPort}`,
               item.destIp,
               item.destPort,
+              `${item.destIp}:${item.destPort}`,
               item.prediction,
               item.action,
               item.riskScore,
@@ -577,6 +593,80 @@ export default function Dashboard() {
   const pagedFlows = filteredFlows.slice(
     (alertPage - 1) * ALERTS_PER_PAGE,
     alertPage * ALERTS_PER_PAGE
+  );
+  const sourceIpOptions = useMemo(
+    () =>
+      [...new Set(allTraffic.map((item) => item.srcIp).filter((ip) => ip && ip !== "-"))]
+        .sort((a, b) => a.localeCompare(b)),
+    [allTraffic]
+  );
+  const portOptions = useMemo(
+    () =>
+      [...new Set(allTraffic.map((item) => String(item.port)).filter((port) => port && port !== "-"))]
+        .sort((a, b) => Number(a) - Number(b)),
+    [allTraffic]
+  );
+  const filteredTraffic = useMemo(() => {
+    const now = Date.now();
+    const rangeDuration =
+      dateRangeFilter === "24h"
+        ? 24 * 60 * 60 * 1000
+        : dateRangeFilter === "7d"
+          ? 7 * 24 * 60 * 60 * 1000
+          : dateRangeFilter === "30d"
+            ? 30 * 24 * 60 * 60 * 1000
+            : null;
+
+    return allTraffic.filter((item) => {
+      if (sourceIpFilter && item.srcIp !== sourceIpFilter) return false;
+      if (portFilter && String(item.port) !== portFilter) return false;
+
+      if (rangeDuration !== null) {
+        const timestamp = getTrafficDate(item)?.getTime();
+
+        if (timestamp === undefined || timestamp < now - rangeDuration) {
+          return false;
+        }
+      }
+
+      return matchesSearch(
+        [
+          item.flowId,
+          item.time,
+          item.startTime,
+          item.srcIp,
+          item.dstIp,
+          item.port,
+          item.protocol,
+          item.result,
+          item.attackType,
+          item.flag,
+        ],
+        submittedTrafficSearch
+      );
+    });
+  }, [
+    allTraffic,
+    dateRangeFilter,
+    portFilter,
+    sourceIpFilter,
+    submittedTrafficSearch,
+  ]);
+  const trafficPageCount = Math.max(
+    1,
+    Math.ceil(filteredTraffic.length / TRAFFIC_LOGS_PER_PAGE)
+  );
+  const firstTrafficPage = Math.min(
+    Math.max(1, trafficPage - 1),
+    Math.max(1, trafficPageCount - 2)
+  );
+  const visibleTrafficPages = Array.from(
+    { length: Math.min(3, trafficPageCount) },
+    (_, index) => firstTrafficPage + index
+  );
+  const pagedTraffic = filteredTraffic.slice(
+    (trafficPage - 1) * TRAFFIC_LOGS_PER_PAGE,
+    trafficPage * TRAFFIC_LOGS_PER_PAGE
   );
 
   const openTrafficDetail = async (flowId: string) => {
@@ -632,6 +722,42 @@ export default function Dashboard() {
 
   useEffect(() => {
     let ignore = false;
+    let refreshTimer: number | undefined;
+
+    const loadAllTraffic = async () => {
+      try {
+        const items = await fetchAllTraffic();
+
+        if (!ignore) {
+          setAllTraffic(items);
+          setTrafficError("");
+        }
+      } catch (err) {
+        console.error("All traffic API error:", err);
+
+        if (!ignore) {
+          setTrafficError("전체 트래픽 로그를 불러오지 못했습니다.");
+        }
+      } finally {
+        if (!ignore) {
+          setTrafficLoading(false);
+          refreshTimer = window.setTimeout(loadAllTraffic, 30_000);
+        }
+      }
+    };
+
+    loadAllTraffic();
+
+    return () => {
+      ignore = true;
+      if (refreshTimer !== undefined) {
+        window.clearTimeout(refreshTimer);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let ignore = false;
 
     const loadAttackTypes = async (showLoading = true) => {
       if (showLoading) {
@@ -680,6 +806,19 @@ export default function Dashboard() {
   }, [alertSearch]);
 
   useEffect(() => {
+    setTrafficPage(1);
+  }, [
+    dateRangeFilter,
+    portFilter,
+    sourceIpFilter,
+    submittedTrafficSearch,
+  ]);
+
+  useEffect(() => {
+    setTrafficPage((page) => Math.min(page, trafficPageCount));
+  }, [trafficPageCount]);
+
+  useEffect(() => {
     const mostSevereFlow = getMostSevereFlow(flows);
 
     if (!mostSevereFlow) return;
@@ -713,7 +852,7 @@ export default function Dashboard() {
   }, [audioAlertEnabled, flows, visualAlertEnabled]);
 
   return (
-    <div className="min-h-screen bg-[#edf1f7] p-6" style={{ fontFamily: "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif", }}>
+    <div className="min-h-screen bg-[#edf2f7] p-6" style={{ fontFamily: "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif", }}>
       <style>
         {`
           @keyframes accessible-screen-flash {
@@ -745,27 +884,27 @@ export default function Dashboard() {
       )}
 
       {/* HEADER */}
-      <div className="bg-white text-[#111827] px-8 py-5 rounded-2xl shadow-lg flex justify-between items-center mb-8">
+      <div className="bg-[#3b4b60] text-white px-8 py-5 rounded-2xl shadow-lg flex justify-between items-center mb-8">
         <h1 className="text-3xl font-bold tracking-wide">
-          한이음 프로젝트
+          보안 시스템 대시보드
         </h1>
 
         <div className="flex items-center gap-5">
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-gray-200">
             현재 {currentAttackType} 공격이 점증 발생 중
           </p>
 
           <div
             id="accessibility-controls"
-            className="flex rounded-xl border border-gray-200 bg-gray-50 p-1"
+            className="flex rounded-xl border border-[#52637a] bg-[#2e3b4e] p-1"
           >
             <button
               type="button"
               onClick={() => setVisualAlertEnabled((enabled) => !enabled)}
               className={`flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${
                 visualAlertEnabled
-                  ? "bg-white text-blue-700 shadow-sm"
-                  : "text-gray-500 hover:text-[#111827]"
+                  ? "bg-[#3b4b60] text-blue-200 shadow-sm"
+                  : "text-gray-300 hover:text-white"
               }`}
               aria-pressed={visualAlertEnabled}
               aria-label="시각 알림 켜기 또는 끄기"
@@ -779,8 +918,8 @@ export default function Dashboard() {
               onClick={() => setAudioAlertEnabled((enabled) => !enabled)}
               className={`flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-semibold transition ${
                 audioAlertEnabled
-                  ? "bg-white text-blue-700 shadow-sm"
-                  : "text-gray-500 hover:text-[#111827]"
+                  ? "bg-[#3b4b60] text-blue-200 shadow-sm"
+                  : "text-gray-300 hover:text-white"
               }`}
               aria-pressed={audioAlertEnabled}
               aria-label="청각 알림 켜기 또는 끄기"
@@ -798,7 +937,7 @@ export default function Dashboard() {
                 setMenuOpen((open) => !open);
                 setNotificationOpen(false);
               }}
-              className="flex h-11 w-11 items-center justify-center rounded-full border border-gray-200 bg-white text-[#111827] shadow-sm transition hover:bg-gray-50"
+              className="flex h-11 w-11 items-center justify-center rounded-full border border-[#52637a] bg-[#2e3b4e] text-white shadow-sm transition hover:bg-[#465870]"
               aria-expanded={menuOpen}
               aria-label="메뉴 열기"
               title="메뉴"
@@ -818,7 +957,7 @@ export default function Dashboard() {
                 setNotificationOpen((open) => !open);
                 setMenuOpen(false);
               }}
-              className="relative flex h-11 w-11 items-center justify-center rounded-full border border-gray-200 bg-white text-[#111827] shadow-sm transition hover:bg-gray-50"
+              className="relative flex h-11 w-11 items-center justify-center rounded-full border border-[#52637a] bg-[#2e3b4e] text-white shadow-sm transition hover:bg-[#465870]"
               aria-label="알림 열기"
             >
               <Bell size={20} />
@@ -884,16 +1023,16 @@ export default function Dashboard() {
   <Panel title="실시간 공격 상태">
     <div className="grid min-h-0 flex-1 grid-cols-1 gap-4">
       {/* PIE */}
-      <div className="flex min-h-0 flex-col rounded-2xl border border-gray-200 bg-white p-5 text-[#111827]">
+      <div className="flex min-h-0 flex-col rounded-2xl border border-[#41506a] bg-[#3b4b60] p-5 text-white">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="text-xl font-bold tracking-wide">공격 유형 비율</p>
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-gray-300">
               {attackChartMode === "all" ? "전체 공격 기준" : "오늘 공격 기준"}
             </p>
           </div>
           <div className="flex flex-col items-end gap-3">
-            <p className="whitespace-nowrap text-sm text-gray-600">
+            <p className="whitespace-nowrap text-sm text-gray-200">
               총 공격 수{" "}
               <span className="text-2xl font-extrabold text-blue-400">
                 {attackTotal.toLocaleString()}
@@ -913,7 +1052,7 @@ export default function Dashboard() {
 
         <div className="relative flex min-h-[420px] flex-1 flex-col justify-center">
           {attackChartMode === "all" && attackTypeLoading && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-white/80 text-sm text-gray-600">
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-[#3b4b60]/90 text-sm text-gray-200">
               데이터를 불러오는 중...
             </div>
           )}
@@ -924,7 +1063,7 @@ export default function Dashboard() {
             </div>
           ) : attackTotal === 0 &&
             !(attackChartMode === "all" && attackTypeLoading) ? (
-            <div className="flex h-full min-h-[360px] items-center justify-center rounded-xl border border-gray-200 bg-white px-4 text-center text-sm text-gray-600">
+            <div className="flex h-full min-h-[360px] items-center justify-center rounded-xl border border-[#52637a] bg-[#34455f] px-4 text-center text-sm text-gray-300">
               표시할 공격 유형 데이터가 없습니다.
             </div>
           ) : (
@@ -958,28 +1097,28 @@ export default function Dashboard() {
                     <Tooltip
                       formatter={(value) => [`${value}건`, "공격 수"]}
                       contentStyle={{
-                        backgroundColor: "#ffffff",
-                        border: "1px solid #e5e7eb",
+                        backgroundColor: "#2e3b4e",
+                        border: "1px solid #52637a",
                         borderRadius: 8,
-                        color: "#111827",
+                        color: "#ffffff",
                       }}
                     />
                   </PieChart>
                 </ResponsiveContainer>
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="flex h-36 w-36 flex-col items-center justify-center rounded-full text-center">
-                    <span className="text-xs font-semibold text-gray-500">
+                    <span className="text-xs font-semibold text-gray-300">
                       전체 공격
                     </span>
-                    <span className="mt-1 text-2xl font-extrabold text-[#111827]">
+                    <span className="mt-1 text-2xl font-extrabold text-white">
                       {attackTotal.toLocaleString()}
                     </span>
-                    <span className="text-xs text-gray-500">건</span>
+                    <span className="text-xs text-gray-300">건</span>
                   </div>
                 </div>
               </div>
 
-              <div className="grid w-full gap-2 border-t border-gray-200 pt-4 lg:w-64 lg:shrink-0 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+              <div className="grid w-full gap-2 border-t border-[#52637a] pt-4 lg:w-64 lg:shrink-0 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
                 {chartData.map((item) => {
                   const percent =
                     attackTotal > 0 ? (item.value / attackTotal) * 100 : 0;
@@ -987,7 +1126,7 @@ export default function Dashboard() {
                   return (
                     <div
                       key={item.name}
-                      className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2"
+                      className="rounded-lg border border-[#52637a] bg-[#34455f] px-3 py-2"
                     >
                       <div className="flex flex-col gap-1">
                         <div className="flex min-w-0 items-start gap-2">
@@ -995,11 +1134,11 @@ export default function Dashboard() {
                             className="mt-1 h-3 w-3 shrink-0 rounded-full"
                             style={{ backgroundColor: getAttackTypeColor(item.name) }}
                           />
-                          <span className="break-words text-sm font-semibold leading-5 text-[#111827]">
+                          <span className="break-words text-sm font-semibold leading-5 text-white">
                             {item.name}
                           </span>
                         </div>
-                        <div className="pl-5 text-sm text-gray-500">
+                        <div className="pl-5 text-sm text-gray-300">
                           <span className="font-bold text-blue-400">
                             {item.value.toLocaleString()}건
                           </span>{" "}
@@ -1016,15 +1155,15 @@ export default function Dashboard() {
       </div>
 
       {/* LINE */}
-      <div className="flex min-h-0 flex-col rounded-2xl border border-gray-200 bg-white p-5">
+      <div className="flex min-h-0 flex-col rounded-2xl border border-[#41506a] bg-[#3b4b60] p-5 text-white">
         <div className="mb-4 flex items-start justify-between gap-3">
           <div>
-            <p className="text-xl font-bold tracking-wide text-[#111827]">
+            <p className="text-xl font-bold tracking-wide text-white">
               최근 7일간 공격
             </p>
-            <p className="mt-1 text-xs text-gray-500">일별 탐지 건수</p>
+            <p className="mt-1 text-xs text-gray-300">일별 탐지 건수</p>
           </div>
-          <p className="whitespace-nowrap text-sm text-gray-600">
+          <p className="whitespace-nowrap text-sm text-gray-200">
             총{" "}
             <span className="text-2xl font-extrabold text-orange-400">
               {weeklyAttackData
@@ -1041,9 +1180,9 @@ export default function Dashboard() {
               data={weeklyAttackData}
               margin={{ top: 12, right: 18, left: -18, bottom: 8 }}
             >
-              <CartesianGrid stroke="#e5e7eb" strokeDasharray="3 3" />
-              <XAxis dataKey="t" stroke="#4b5563" />
-              <YAxis stroke="#4b5563" allowDecimals={false} />
+              <CartesianGrid stroke="#52637a" strokeDasharray="3 3" />
+              <XAxis dataKey="t" stroke="#cbd5e1" />
+              <YAxis stroke="#cbd5e1" allowDecimals={false} />
               <Tooltip formatter={(value) => [`${value}건`, "공격 수"]} />
               <Line
                 type="monotone"
@@ -1063,8 +1202,8 @@ export default function Dashboard() {
   {/* RIGHT PANEL */}
   <div id="alert-log" className="scroll-mt-6">
   <Panel title="실시간 알림 로그">
-    <div className="bg-white rounded-2xl p-5 mb-4 border border-gray-200">
-      <p className="text-sm text-gray-600 mb-2">최근 24시간 공격 추이</p>
+    <div className="bg-[#3b4b60] rounded-2xl p-5 mb-4 border border-[#41506a]">
+      <p className="text-sm text-gray-200 mb-2">최근 24시간 공격 추이</p>
 
       <ResponsiveContainer width="100%" height={130}>
         <ResponsiveContainer width="100%" height={130}>
@@ -1072,7 +1211,7 @@ export default function Dashboard() {
 
             <XAxis
                 dataKey="t"
-                stroke="#4b5563"
+                stroke="#cbd5e1"
                 interval={2}
             />
 
@@ -1104,31 +1243,31 @@ export default function Dashboard() {
 
     <div className="flex gap-3 mb-4">
       <input
-        className="flex-1 bg-white rounded-lg px-4 py-2 text-sm text-[#111827] outline-none border border-gray-200"
+        className="flex-1 bg-[#3b4b60] rounded-lg px-4 py-2 text-sm text-white outline-none border border-[#52637a] placeholder:text-gray-300 focus:border-blue-400"
         placeholder="검색"
         value={alertSearch}
         onChange={(event) => setAlertSearch(event.target.value)}
       />
     </div>
 
-    <div className="overflow-x-auto rounded-xl border border-gray-200">
+    <div className="overflow-x-auto rounded-xl border border-[#52637a]">
       <table className="min-w-[760px] w-full text-sm">
-        <thead className="bg-white text-left text-[#111827]">
+        <thead className="bg-[#3b4b60] text-left text-white">
           <tr>
-            <Th>흐름 ID</Th>
-            <Th>출발지 IP:포트</Th>
-            <Th>목적지 IP:포트</Th>
-            <Th>분석 결과</Th>
-            <Th>권장 조치</Th>
-            <Th>위험 점수</Th>
-            <Th>상세</Th>
+            <Th>Flow ID</Th>
+            <Th>Src IP:Port</Th>
+            <Th>Dest IP:Port</Th>
+            <Th>Prediction</Th>
+            <Th>Action</Th>
+            <Th>Risk Score</Th>
+            <Th>Details</Th>
           </tr>
         </thead>
         <tbody>
           {pagedFlows.map((item) => (
             <tr
               key={item.flowId}
-              className="border-t border-gray-200 hover:bg-gray-50"
+              className="border-t border-[#52637a] hover:bg-[#3b4b60]"
             >
               <Td>{item.flowId}</Td>
               <Td>{`${item.srcIp}:${item.srcPort}`}</Td>
@@ -1141,7 +1280,7 @@ export default function Dashboard() {
                   type="button"
                   onClick={() => openTrafficDetail(item.flowId)}
                   disabled={detailLoadingId === item.flowId}
-                  className="text-[#111827] transition hover:text-gray-600 disabled:cursor-wait disabled:opacity-60"
+                  className="text-blue-300 transition hover:text-blue-200 disabled:cursor-wait disabled:opacity-60"
                 >
                   {detailLoadingId === item.flowId
                     ? "불러오는 중..."
@@ -1151,8 +1290,8 @@ export default function Dashboard() {
             </tr>
           ))}
           {pagedFlows.length === 0 && (
-            <tr className="border-t border-gray-200">
-              <Td className="text-center text-gray-600" colSpan={7}>
+            <tr className="border-t border-[#52637a]">
+              <Td className="text-center text-gray-300" colSpan={7}>
                 검색 결과가 없습니다.
               </Td>
             </tr>
@@ -1192,7 +1331,7 @@ export default function Dashboard() {
               alertPage===1
           }
 
-          className="bg-white text-[#111827] border border-gray-200 px-4 py-2 rounded disabled:opacity-40"
+          className="bg-[#3b4b60] text-white border border-[#52637a] px-4 py-2 rounded disabled:opacity-40"
       >
         Previous
       </button>
@@ -1221,7 +1360,7 @@ export default function Dashboard() {
               alertPageCount
           }
 
-          className="bg-white text-[#111827] border border-gray-200 px-4 py-2 rounded disabled:opacity-40"
+          className="bg-[#3b4b60] text-white border border-[#52637a] px-4 py-2 rounded disabled:opacity-40"
       >
         Next
       </button>
@@ -1245,6 +1384,234 @@ export default function Dashboard() {
   </Panel>
   </div>
 </div>
+
+      <section
+        id="traffic-analysis"
+        className="mb-8 rounded-2xl bg-[#2e3b4e] p-6 text-white shadow-lg"
+        aria-labelledby="traffic-analysis-title"
+      >
+        <h2
+          id="traffic-analysis-title"
+          className="mb-5 text-2xl font-semibold tracking-wide"
+        >
+          상세 트래픽 분석
+        </h2>
+        <p className="mb-4 text-sm text-gray-300">
+          네트워크 트래픽 목록 (검색 및 페이지 이동)
+        </p>
+
+        <div className="mb-5 flex flex-col gap-3 rounded-xl bg-[#3b4b60] p-3 lg:flex-row">
+          <form
+            className="flex min-w-0 flex-1 gap-2"
+            role="search"
+            onSubmit={(event) => {
+              event.preventDefault();
+              setSubmittedTrafficSearch(trafficSearch.trim());
+            }}
+          >
+            <label className="relative min-w-0 flex-1">
+              <Search
+                size={17}
+                className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"
+                aria-hidden="true"
+              />
+              <input
+                type="search"
+                value={trafficSearch}
+                onChange={(event) => setTrafficSearch(event.target.value)}
+                placeholder="Search"
+                aria-label="전체 트래픽 검색"
+                className="h-10 w-full rounded-l-lg border border-[#52637a] bg-[#2e3b4e] pl-10 pr-3 text-sm text-white outline-none placeholder:text-gray-300 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/30"
+              />
+            </label>
+            <button
+              type="submit"
+              aria-label="검색"
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-r-lg border border-[#52637a] bg-[#3b4b60] text-white transition hover:bg-[#465870] focus:outline-none focus:ring-2 focus:ring-blue-400"
+            >
+              <Search size={17} aria-hidden="true" />
+            </button>
+          </form>
+
+          <select
+            value={sourceIpFilter}
+            onChange={(event) => setSourceIpFilter(event.target.value)}
+            aria-label="출발지 IP 필터"
+            className="h-10 rounded-lg border border-[#52637a] bg-[#2e3b4e] px-4 text-sm text-white outline-none focus:border-blue-400"
+          >
+            <option value="">Source IP 전체</option>
+            {sourceIpOptions.map((ip) => (
+              <option key={ip} value={ip}>
+                {ip}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={dateRangeFilter}
+            onChange={(event) =>
+              setDateRangeFilter(event.target.value as TrafficDateRange)
+            }
+            aria-label="기간 필터"
+            className="h-10 rounded-lg border border-[#52637a] bg-[#2e3b4e] px-4 text-sm text-white outline-none focus:border-blue-400"
+          >
+            <option value="all">Date Range</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+          </select>
+
+          <select
+            value={portFilter}
+            onChange={(event) => setPortFilter(event.target.value)}
+            aria-label="포트 필터"
+            className="h-10 rounded-lg border border-[#52637a] bg-[#2e3b4e] px-4 text-sm text-white outline-none focus:border-blue-400"
+          >
+            <option value="">Port 전체</option>
+            {portOptions.map((port) => (
+              <option key={port} value={port}>
+                {port}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <p className="mb-3 text-sm text-gray-300" aria-live="polite">
+          {trafficLoading
+            ? "트래픽 로그를 불러오는 중..."
+            : `${filteredTraffic.length.toLocaleString()}건`}
+        </p>
+
+        <div className="overflow-x-auto rounded-xl border border-[#52637a]">
+          <table className="min-w-[1000px] w-full text-left text-sm">
+            <thead className="bg-[#3b4b60]">
+              <tr>
+                <Th>FlowID</Th>
+                <Th>Timestamp</Th>
+                <Th>Source IP</Th>
+                <Th>Destination IP</Th>
+                <Th>Port</Th>
+                <Th>Protocol</Th>
+                <Th>TCP Flags</Th>
+                <Th>AI Result</Th>
+                <Th>Actions</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {trafficError ? (
+                <tr className="border-t border-[#52637a]">
+                  <Td className="py-8 text-center text-red-200" colSpan={9}>
+                    {trafficError}
+                  </Td>
+                </tr>
+              ) : pagedTraffic.length > 0 ? (
+                pagedTraffic.map((item) => (
+                  <tr
+                    key={item.flowId}
+                    className="border-t border-[#52637a] transition hover:bg-[#3b4b60]"
+                  >
+                    <Td>{item.flowId}</Td>
+                    <Td>{item.time}</Td>
+                    <Td>
+                      <button
+                        type="button"
+                        onClick={() => setSourceIpFilter(item.srcIp)}
+                        aria-label={`출발지 IP ${item.srcIp} 선택`}
+                        title="눌러서 이 출발지 IP로 필터링"
+                        className={`rounded px-1 py-0.5 text-left transition hover:bg-white/10 hover:text-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-400 ${
+                          sourceIpFilter === item.srcIp
+                            ? "bg-blue-500/20 text-blue-200"
+                            : "text-inherit"
+                        }`}
+                      >
+                        {item.srcIp}
+                      </button>
+                    </Td>
+                    <Td>{item.dstIp}</Td>
+                    <Td>
+                      <button
+                        type="button"
+                        onClick={() => setPortFilter(String(item.port))}
+                        aria-label={`포트 ${item.port} 선택`}
+                        title="눌러서 이 포트로 필터링"
+                        className={`rounded px-1 py-0.5 transition hover:bg-white/10 hover:text-blue-200 focus:outline-none focus:ring-2 focus:ring-blue-400 ${
+                          portFilter === String(item.port)
+                            ? "bg-blue-500/20 text-blue-200"
+                            : "text-inherit"
+                        }`}
+                      >
+                        {item.port}
+                      </button>
+                    </Td>
+                    <Td>{item.protocol}</Td>
+                    <Td>{item.flag}</Td>
+                    <Td className="font-medium text-yellow-300">
+                      {item.result}
+                    </Td>
+                    <Td>
+                      <button
+                        type="button"
+                        onClick={() => openTrafficDetail(item.flowId)}
+                        disabled={detailLoadingId === item.flowId}
+                        className="whitespace-nowrap text-blue-300 transition hover:text-blue-200 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        {detailLoadingId === item.flowId
+                          ? "불러오는 중..."
+                          : "[상세 보기]"}
+                      </button>
+                    </Td>
+                  </tr>
+                ))
+              ) : (
+                <tr className="border-t border-[#52637a]">
+                  <Td className="py-8 text-center text-gray-300" colSpan={9}>
+                    {trafficLoading
+                      ? "트래픽 로그를 불러오는 중..."
+                      : "검색 결과가 없습니다."}
+                  </Td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="mt-5 flex items-center justify-center gap-2">
+          <button
+            type="button"
+            onClick={() => setTrafficPage((page) => Math.max(1, page - 1))}
+            disabled={trafficPage === 1}
+            className="rounded-lg border border-[#52637a] bg-[#3b4b60] px-4 py-2 text-sm transition hover:bg-[#465870] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          {visibleTrafficPages.map((page) => (
+            <button
+              key={page}
+              type="button"
+              onClick={() => setTrafficPage(page)}
+              aria-current={trafficPage === page ? "page" : undefined}
+              aria-label={`${page}페이지`}
+              className={`h-9 min-w-9 rounded-lg px-3 text-sm transition focus:outline-none focus:ring-2 focus:ring-blue-400 ${
+                trafficPage === page
+                  ? "bg-blue-500 font-semibold text-white"
+                  : "text-white hover:bg-white/10"
+              }`}
+            >
+              {page}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() =>
+              setTrafficPage((page) => Math.min(trafficPageCount, page + 1))
+            }
+            disabled={trafficPage === trafficPageCount}
+            className="rounded-lg border border-[#52637a] bg-[#3b4b60] px-4 py-2 text-sm transition hover:bg-[#465870] disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </section>
 
       {accessibilityAlert && visualAlertEnabled && (
         <AccessibleAlertBanner
@@ -1321,7 +1688,7 @@ interface PanelProps {
 function Panel({ title, children }: PanelProps) {
   return (
     <div 
-      className="flex h-full flex-col bg-white text-[#111827] rounded-2xl shadow-lg p-6 border border-gray-200"
+      className="flex h-full flex-col bg-[#2e3b4e] text-white rounded-2xl shadow-lg p-6 border border-[#41506a]"
       style={{
         fontFamily:
           "'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', sans-serif",
@@ -1343,7 +1710,7 @@ function ToggleGroup<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div className="flex rounded-lg bg-white p-1 text-xs border border-gray-200">
+    <div className="flex rounded-lg bg-[#2e3b4e] p-1 text-xs border border-[#52637a]">
       {options.map((option) => (
         <button
           key={option.value}
@@ -1351,8 +1718,8 @@ function ToggleGroup<T extends string>({
           onClick={() => onChange(option.value)}
           className={`rounded-md px-3 py-1 transition ${
             value === option.value
-              ? "bg-white text-[#111827] border border-gray-200"
-              : "text-gray-600 hover:text-[#111827]"
+              ? "bg-[#3b4b60] text-white border border-[#52637a]"
+              : "text-gray-300 hover:text-white"
           }`}
         >
           {option.label}
